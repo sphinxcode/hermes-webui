@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Show an elapsed timer on the running automatic-compression card so long WebUI context-compression pauses no longer look frozen while the browser waits for the `compressed` event.
+
 ## [v0.51.89] — 2026-05-18 — Release BM (stage-382 — 6-PR full sweep batch — runtime adapter approval/clarify seam + SOUL.md memory panel + #1855 resolve_model_provider fast-path + PWA sidebar spinner fix + /model active-provider preference + contributor contract docs index)
 
 ### Changed
