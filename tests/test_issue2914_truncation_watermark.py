@@ -608,3 +608,58 @@ def test_edit_does_not_leak_original_message_into_context_via_reconcile(monkeypa
     assert "360°" in contents
     assert "list all" in contents
     assert "square, list" in contents
+
+
+def test_above_watermark_state_row_merges_once_sidecar_advances():
+    """A genuine future state.db-only row must merge after the session advances.
+
+    Because Session.save() no longer auto-clears the truncation_watermark, an
+    unconditional `timestamp > watermark` skip in merge_session_messages_append_only
+    would become a PERMANENT ceiling: once the user edits/undoes (setting the
+    watermark) and then keeps chatting, a later turn that lands in state.db but
+    is missed by the sidecar (recovery/compaction) would be silently dropped from
+    /api/session and model-context reconstruction forever. The fix only applies the
+    above-watermark skip while the sidecar has NOT advanced past the watermark.
+    Codex regression-gate finding on #3102 (v0.51.197).
+    """
+    from api.models import merge_session_messages_append_only as merge
+
+    # Session edited at watermark=2.0, then advanced: sidecar tail is now 4.1.
+    sidecar = [
+        _msg("user", "q1", 1.0, "s-u1"),
+        _msg("assistant", "a1", 2.0, "s-a1"),
+        _msg("user", "q2 after edit", 4.0, "s-u2"),
+        _msg("assistant", "a2 after edit", 4.1, "s-a2"),
+    ]
+    # state.db carries a genuine NEWER row (5.0) the sidecar hasn't observed yet.
+    state = sidecar + [_msg("assistant", "future recovery row", 5.0, "st-recov")]
+
+    merged = merge(sidecar, state, truncation_watermark=2.0)
+    contents = [m["content"] for m in merged]
+    assert "future recovery row" in contents, (
+        "After the session advanced past the watermark, a future state.db-only "
+        f"recovery row must merge, not be permanently dropped. Got: {contents}"
+    )
+
+
+def test_above_watermark_deleted_tail_still_filtered_when_sidecar_not_advanced():
+    """The #2914 deleted-tail filter must still hold when the sidecar has NOT advanced.
+
+    Counterpart to the test above: if the user edited/truncated (watermark=2.0)
+    and the sidecar tail is still at/below the watermark, a stale deleted-tail row
+    in state.db ABOVE the watermark must NOT reappear.
+    """
+    from api.models import merge_session_messages_append_only as merge
+
+    sidecar = [
+        _msg("user", "q1", 1.0, "s-u1"),
+        _msg("assistant", "a1", 2.0, "s-a1"),
+    ]
+    state = sidecar + [_msg("assistant", "deleted tail", 5.0, "st-deleted")]
+
+    merged = merge(sidecar, state, truncation_watermark=2.0)
+    contents = [m["content"] for m in merged]
+    assert "deleted tail" not in contents, (
+        "A stale deleted-tail row above the watermark must stay filtered while "
+        f"the sidecar has not advanced past the watermark. Got: {contents}"
+    )

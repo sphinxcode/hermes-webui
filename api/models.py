@@ -4056,11 +4056,27 @@ def merge_session_messages_append_only(
                     skipped_state_visible_counts.get(matched_visible_key, 0) + 1
                 )
             continue
+        # Skip rows ABOVE the watermark only while the sidecar has NOT advanced
+        # past the watermark. Because Session.save() no longer auto-clears the
+        # watermark, an unconditional `timestamp > watermark` skip would become
+        # permanent and silently drop legitimate future state.db-only recovery
+        # rows once the session moves forward past the edit boundary. Once the
+        # sidecar's own max timestamp is beyond the watermark (the session has
+        # advanced), allow state rows newer than the sidecar tail to merge.
+        sidecar_advanced_past_watermark = (
+            watermark_timestamp is not None
+            and max_sidecar_timestamp is not None
+            and max_sidecar_timestamp > watermark_timestamp
+        )
         if (
             watermark_timestamp is not None
             and timestamp is not None
             and timestamp > watermark_timestamp
             and key not in seen_message_keys
+            and (
+                not sidecar_advanced_past_watermark
+                or (max_sidecar_timestamp is not None and timestamp <= max_sidecar_timestamp)
+            )
         ):
             continue
         # When a truncation watermark is active, state.db may contain original
