@@ -45,7 +45,7 @@ def test_recovery_control_does_not_filter_genuine_interruption_card():
     interruption the user should see (the inverse-#3300 data-loss class). Drive
     the ACTUAL _isRecoveryControlMessage() from ui.js via node.
     """
-    import shutil, subprocess, json, re
+    import shutil, subprocess, json
     node = shutil.which("node")
     if node is None:
         import pytest
