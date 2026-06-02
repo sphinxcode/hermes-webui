@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 # a settings key). Lowercase alnum + - / _, 1-64 chars, must start with a letter.
 _VALID_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
-# Valid tab.path: a clean same-origin absolute path. Must start with '/', then
-# only safe path chars — no quotes, whitespace, control chars, query ('?') or
-# fragment ('#') so it can't break out of a JS-string nav arg or shadow routes.
-_VALID_PLUGIN_TAB_PATH = re.compile(r"^/[A-Za-z0-9._~/-]{0,255}$")
+# Valid tab.path: a clean same-origin absolute path. Must start with a single
+# '/' (NOT '//' — a leading '//' is a protocol-relative URL that would resolve
+# to a remote origin when assigned to iframe.src), then only safe path chars —
+# no quotes, whitespace, control chars, query ('?') or fragment ('#').
+_VALID_PLUGIN_TAB_PATH = re.compile(r"^/(?!/)[A-Za-z0-9._~/-]{0,255}$")
 
 # plugin_name -> manifest dict (as loaded from manifest.json)
 PLUGIN_MANIFESTS: dict[str, dict] = {}

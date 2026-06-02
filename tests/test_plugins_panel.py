@@ -428,6 +428,7 @@ class TestPluginNameValidation:
         assert not plugins._VALID_PLUGIN_TAB_PATH.match("/x?y=1")         # query
         assert not plugins._VALID_PLUGIN_TAB_PATH.match("/x#frag")        # fragment
         assert not plugins._VALID_PLUGIN_TAB_PATH.match("/x y")           # whitespace
+        assert not plugins._VALID_PLUGIN_TAB_PATH.match("//evil.example/p")  # protocol-relative
 
     def test_open_button_and_toggle_use_no_inline_handlers(self):
         # tab.path / plugin.key must not be interpolated into inline onclick/

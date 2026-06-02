@@ -6513,7 +6513,6 @@ const enabled=plugin&&plugin.enabled!==false;
         <div class="provider-card-name">${esc((plugin&&plugin.name)||t('plugins_unnamed'))}</div>
         <div class="provider-card-meta">${esc((plugin&&plugin.key)||'plugin')}${version}</div>
       </div>
-      ${isDashboardPlugin?`<span class="provider-card-badge ${enabled?'':'plugin-card-badge-disabled'}">${enabled?t('plugins_enabled'):t('plugins_disabled')}</span>`:''}
       <span class="provider-card-badge ${badgeClass}">${badgeText}</span>
     </div>
     <div class="provider-card-body plugin-card-body">
