@@ -8,7 +8,6 @@ The global keydown handler in boot.js must have a branch that:
 
 Issue: #4391 (Ctrl+, opens Settings)
 """
-import re
 from pathlib import Path
 
 BOOT_JS = (Path(__file__).parent.parent / "static" / "boot.js").read_text(encoding="utf-8")
