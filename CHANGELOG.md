@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Malformed background-process wakeup events no longer appear as empty `unknown completed` prompts.** WebUI now ignores empty or unknown completion-queue payloads and renders watch-pattern overflow summaries as explicit watch notifications instead of fake process completions.
+
 ## [v0.51.489] — 2026-06-18 — Release QY (outline button no longer collides with the scroll control)
 
 ### Fixed
