@@ -1,9 +1,11 @@
 """Test coverage for source field threading on process-wakeup synthetic turns."""
 
 import time
-from api.models import Session, _append_recovered_pending_turn
+from pathlib import Path
+
+from api.models import Session, _append_recovered_pending_turn, _apply_core_sync_or_error_marker
 from api.routes import _checkpoint_user_message_for_eager_session_save
-from api.streaming import _merge_display_messages_after_agent_result
+from api.streaming import _materialize_pending_user_turn_before_error, _merge_display_messages_after_agent_result
 
 
 def test_append_recovered_pending_turn_stamps_process_wakeup_source():
@@ -162,3 +164,29 @@ def test_merge_display_leaves_webui_user_turn_unmarked():
 
     assert merged[0]["role"] == "user"
     assert "_source" not in merged[0]
+
+
+def test_materialize_pending_user_turn_before_error_stamps_process_wakeup_source():
+    s = Session(
+        session_id="test-session-8",
+        pending_user_message="[IMPORTANT: Wakeup prompt]",
+        pending_user_source="process_wakeup",
+    )
+    s.messages = []
+
+    assert _materialize_pending_user_turn_before_error(s) is True
+    assert s.messages[0]["_source"] == "process_wakeup"
+
+
+def test_apply_core_sync_or_error_marker_clears_pending_user_source(tmp_path):
+    s = Session(
+        session_id="test-session-9",
+        pending_user_message="[IMPORTANT: Wakeup prompt]",
+        pending_user_source="process_wakeup",
+    )
+    s.messages = [{"role": "assistant", "content": "done"}]
+    s.pending_started_at = time.time()
+    s.save = lambda *args, **kwargs: None
+
+    assert _apply_core_sync_or_error_marker(s, Path(tmp_path / "missing-core.json")) is True
+    assert s.pending_user_source is None
