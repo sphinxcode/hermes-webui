@@ -2348,12 +2348,16 @@ function _kanbanLinksHtml(links){
   const parents = (links && links.parents) || [];
   const children = (links && links.children) || [];
   const taskId = _kanbanCurrentTaskId;
-  const item = (id) => `<code>${esc(id)} <button class="btn mini" onclick="removeKanbanDependency('${esc(taskId)}','${esc(id)}')" data-i18n="kanban_remove_dependency" title="${esc(t('kanban_remove_dependency') || 'Remove')}">✕</button></code>`;
+  const item = (id, isParent) => {
+    const parentId = isParent ? id : taskId;
+    const childId = isParent ? taskId : id;
+    return `<code>${esc(id)} <button class="btn mini" onclick="removeKanbanDependency('${esc(parentId)}','${esc(childId)}')" data-i18n="kanban_remove_dependency" title="${esc(t('kanban_remove_dependency') || 'Remove')}">✕</button></code>`;
+  };
   const hasLinks = parents.length || children.length;
   return `<div class="kanban-detail-links-section">
     ${hasLinks ? `<div class="kanban-detail-links-grid">
-      <div><strong>${esc(t('kanban_parents'))}</strong><div>${parents.length ? parents.map(item).join(' ') : esc(t('kanban_empty'))}</div></div>
-      <div><strong>${esc(t('kanban_children'))}</strong><div>${children.length ? children.map(item).join(' ') : esc(t('kanban_empty'))}</div></div>
+      <div><strong>${esc(t('kanban_parents'))}</strong><div>${parents.length ? parents.map(id => item(id, true)).join(' ') : esc(t('kanban_empty'))}</div></div>
+      <div><strong>${esc(t('kanban_children'))}</strong><div>${children.length ? children.map(id => item(id, false)).join(' ') : esc(t('kanban_empty'))}</div></div>
     </div>` : ''}
     <div class="kanban-detail-links-controls">
       <input type="text" id="kanbanDependencyInput" maxlength="255" autocomplete="off" data-i18n-placeholder="kanban_dependency_placeholder" placeholder="Task ID to link">
@@ -2899,14 +2903,14 @@ async function addKanbanDependency(taskId){
   } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
 }
 
-async function removeKanbanDependency(taskId, linkId){
-  if (!taskId || !linkId) return;
+async function removeKanbanDependency(parentId, childId){
+  if (!parentId || !childId) return;
   try {
     await api('/api/kanban/links/delete' + _kanbanBoardQuery(), {
       method: 'POST',
-      body: JSON.stringify({parent_id: taskId, child_id: linkId}),
+      body: JSON.stringify({parent_id: parentId, child_id: childId}),
     });
-    await loadKanbanTask(taskId);
+    await loadKanbanTask(_kanbanCurrentTaskId);
   } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
 }
 
