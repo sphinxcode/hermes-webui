@@ -14139,8 +14139,17 @@ def _active_run_stream_for_session(session_id: str | None) -> str | None:
     now = time.time()
     try:
         from api import config as _live_config
+        # Snapshot the live-worker set BEFORE taking ACTIVE_RUNS_LOCK (sequential,
+        # not nested, so no lock-ordering/deadlock risk). A long turn whose
+        # active_stream_id was already cleared during final writeback can still be
+        # mid-teardown — its STREAMS entry present — past the age ceiling, so age
+        # alone must NOT pop its lifecycle row (health / background-wakeup /
+        # active-agent-cache consumers read ACTIVE_RUNS as worker-lifecycle truth).
+        with _live_config.STREAMS_LOCK:
+            live_stream_ids = set(_live_config.STREAMS.keys())
+        stale_stream_ids = []
         with _live_config.ACTIVE_RUNS_LOCK:
-            for run_stream_id, raw in (_live_config.ACTIVE_RUNS or {}).items():
+            for run_stream_id, raw in list((_live_config.ACTIVE_RUNS or {}).items()):
                 stream_id = str((raw or {}).get("stream_id") or run_stream_id or "").strip()
                 run_sid = str((raw or {}).get("session_id") or "").strip()
                 if run_sid != sid or not stream_id:
@@ -14149,11 +14158,19 @@ def _active_run_stream_for_session(session_id: str | None) -> str | None:
                     started_at = float((raw or {}).get("started_at") or 0)
                 except (TypeError, ValueError):
                     started_at = 0.0
-                # Ignore a stale/wedged entry past the unwind ceiling so it can't
-                # block the session permanently.
+                # Past the unwind ceiling: never block a successor on it (the
+                # anti-permanent-409 guarantee, #3822). Additionally reconcile the
+                # zombie out of ACTIVE_RUNS so health/recovery polling stops seeing a
+                # half-alive run — but ONLY when the worker is truly gone from
+                # STREAMS, so a still-live / still-tearing-down worker keeps its
+                # lifecycle row. Pop by the real dict key. (Codex gate, #4492)
                 if started_at and (now - started_at) > ceiling:
+                    if run_stream_id not in live_stream_ids and stream_id not in live_stream_ids:
+                        stale_stream_ids.append(run_stream_id)
                     continue
                 return stream_id
+            for stale_stream_id in stale_stream_ids:
+                (_live_config.ACTIVE_RUNS or {}).pop(stale_stream_id, None)
     except Exception:
         return None
     return None

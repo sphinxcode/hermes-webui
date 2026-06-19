@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+## [v0.51.519] — 2026-06-19 — Release SD (reconcile stale active-run registry entries)
+
+### Fixed
+
+- **A genuinely-dead streaming run no longer lingers in the active-run registry advertising a half-alive state (#4492).** When a run passed the bounded unwind ceiling, `_active_run_stream_for_session` already declined to block a successor turn on it, but the zombie entry stayed in `ACTIVE_RUNS`, so health and recovery polling kept seeing it. It now reconciles those entries out of the registry — but only when the worker is truly gone from the live `STREAMS` map, so a long turn that is merely mid-teardown keeps its lifecycle row. `cancel_stream` also stamps the run `phase="cancelling"` immediately so the registry reflects the cancel during the detached teardown window. Thanks @ai-ag2026.
+
 ## [v0.51.518] — 2026-06-19 — Release SC (read-only memory writes report 403, not 500)
 
 ### Fixed
