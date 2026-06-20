@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+## [v0.51.541] — 2026-06-20 — Release SZ (model picker recovers a stale disk cache on catalog timeout)
+
+### Fixed
+
+- **The model picker now falls back to a stale disk cache instead of a thin "Default" group when the live catalog rebuild times out (#3928 follow-up).** The strict cache loader rejects `models_cache.json` when its metadata/fingerprint stamps are out of date, which previously forced the over-budget rebuild path to fall all the way back to the minimal static catalog — losing the user's real provider/model groups whenever a rebuild ran long with only a stale cache on disk. A new shape-validated loader reads that stale payload (read before acquiring the cache lock, so it doesn't extend the lock hold) and serves it as the over-budget fallback, preferring it over the static minimal catalog. Strict cold-path cache hits and the static fallback for a truly empty cache are unchanged. Thanks @starship-s.
+
 ## [v0.51.540] — 2026-06-20 — Release SY (cross-provider model selection sticks + gateway reasoning effort)
 
 ### Fixed
