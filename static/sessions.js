@@ -3854,6 +3854,11 @@ async function _runRenderSessionListRefresh(opts, _gen){
     _applySessionListPayload(sessData,projData);
   }catch(e){
     if (_gen !== _renderSessionListGen) return;
+    // #4671: same embargo guard as the success path — a mid-switch /api/sessions that
+    // FAILS must not clear the skeleton flag or render the old-profile cache either. The
+    // switch-owned render (after the embargo lifts) is the only one allowed to resolve the
+    // skeleton; if the switch itself fails, its catch clears the skeleton + embargo.
+    if (_profileSwitchListEmbargo) return;
     _showSessionListLoadError(e);
     // Only fall back to the cached rows if they were loaded under the SAME
     // scope we're requesting now. After a profile switch the cache holds the

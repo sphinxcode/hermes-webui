@@ -5936,25 +5936,6 @@ async function switchToProfile(name) {
   // context change where dismissing those transient affordances is correct.
   if (typeof _renamingSid !== 'undefined' && _renamingSid) _renamingSid = null;
   if (typeof closeSessionActionMenu === 'function') closeSessionActionMenu();
-  // #4671 CORE: invalidate any in-flight/queued session-list render BEFORE showing the
-  // skeleton, so a pre-switch /api/sessions response (old profile's rows, issued before
-  // the switch) can't resolve, pass the generation guard, clear the skeleton flag, and
-  // paint stale rows over the skeleton. Must precede showSessionListSkeleton().
-  if (typeof _invalidateSessionListRenders === 'function') _invalidateSessionListRenders();
-  // ...and set the embargo so a render that STARTS during the switch window (after the
-  // skeleton, before the new-profile cookie is set) also can't paint the old profile's
-  // rows. Cleared right before the switch-owned renderSessionList() and on failure.
-  if (typeof _setProfileSwitchListEmbargo === 'function') _setProfileSwitchListEmbargo(true);
-  if (typeof showSessionListSkeleton === 'function') showSessionListSkeleton();
-  const _workspaceVisibleAtStart = typeof _workspacePanelMode !== 'undefined' && _workspacePanelMode !== 'closed';
-  // #4671 CORE: invalidate any in-flight workspace-tree load UNCONDITIONALLY at switch
-  // start — even when the panel is closed, loadDir('.') still runs later in the switch,
-  // and an empty-session switch reuses the same session_id so loadDir's id guard alone
-  // can't reject a stale previous-workspace /api/list. Bumping the generation here (not
-  // only inside showWorkspaceTreeSkeleton, which is panel-gated) closes the closed-panel race.
-  if (typeof bumpWorkspaceTreeGen === 'function') bumpWorkspaceTreeGen();
-  if (_workspaceVisibleAtStart && typeof showWorkspaceTreeSkeleton === 'function') showWorkspaceTreeSkeleton();
-
   // Determine whether the current session has any messages.
   // A session with messages is "in progress" and belongs to the current profile —
   // we must not retag it.  We'll start a fresh session for the new profile instead.
@@ -5963,8 +5944,29 @@ async function switchToProfile(name) {
     S.session.active_stream_id ||
     S.session.pending_user_message
   );
+  const _workspaceVisibleAtStart = typeof _workspacePanelMode !== 'undefined' && _workspacePanelMode !== 'closed';
 
+  // #4671 CORE: the skeleton/embargo/generation setup is INSIDE the try so the
+  // _switchGen-guarded finally always lifts the embargo — a throw in this synchronous
+  // setup can't leak the embargo and freeze the sidebar (Codex re-gate 4).
   try {
+    // Invalidate any in-flight/queued session-list render BEFORE showing the skeleton,
+    // so a pre-switch /api/sessions response (old profile's rows, issued before the
+    // switch) can't resolve, pass the generation guard, clear the skeleton flag, and
+    // paint stale rows. Must precede showSessionListSkeleton().
+    if (typeof _invalidateSessionListRenders === 'function') _invalidateSessionListRenders();
+    // ...and set the embargo so a render that STARTS during the switch window (after the
+    // skeleton, before the new-profile cookie is set) also can't paint the old profile's
+    // rows. Cleared right before the switch-owned renderSessionList() and on failure.
+    if (typeof _setProfileSwitchListEmbargo === 'function') _setProfileSwitchListEmbargo(true);
+    if (typeof showSessionListSkeleton === 'function') showSessionListSkeleton();
+    // invalidate any in-flight workspace-tree load UNCONDITIONALLY at switch start — even
+    // when the panel is closed, loadDir('.') still runs later, and an empty-session switch
+    // reuses the same session_id so loadDir's id guard alone can't reject a stale
+    // previous-workspace /api/list. Bump here (not only inside the panel-gated
+    // showWorkspaceTreeSkeleton) to close the closed-panel race.
+    if (typeof bumpWorkspaceTreeGen === 'function') bumpWorkspaceTreeGen();
+    if (_workspaceVisibleAtStart && typeof showWorkspaceTreeSkeleton === 'function') showWorkspaceTreeSkeleton();
     // timeoutToast:false — suppress api()'s generic "Request timed out" toast so a
     // superseded or transient-but-eventually-successful switch can't pop a spurious
     // red error while the real switch completes and renders. The catch block below is
