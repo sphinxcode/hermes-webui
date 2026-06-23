@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Live Compact Worklog refreshes no longer jump the transcript while you are reading in-progress output.** The live anchor scene rebuild now captures and restores the outer message viewport around Worklog DOM replacement before applying the normal pinned-at-bottom follow behavior, so manually-unpinned readers keep their place while active Worklog rows refresh or settle. (#4742)
+
 ## [v0.51.596] — 2026-06-23 — Release VC (throttle reasoning SSE to stop tab freeze)
 
 ### Fixed
