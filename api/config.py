@@ -6797,9 +6797,12 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 _available_models_cache = result
                 _available_models_cache_ts = time.monotonic()
                 _available_models_cache_source_fingerprint = _models_cache_source_fingerprint()
-                _cache_build_in_progress = False
-                _cache_build_cv.notify_all()
-            _save_models_cache_to_disk(result)
+            try:
+                _save_models_cache_to_disk(result)
+            finally:
+                with _cache_build_cv:
+                    _cache_build_in_progress = False
+                    _cache_build_cv.notify_all()
             return copy.deepcopy(result)
 
         # ── Bounded rebuild (defense-in-depth) ───────────────────────────────
@@ -6840,12 +6843,14 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 _available_models_cache_source_fingerprint = (
                     _models_cache_source_fingerprint()
                 )
-                _cache_build_in_progress = False
-                _cache_build_cv.notify_all()
             try:
                 _save_models_cache_to_disk(result)
             except Exception:
                 logger.debug("models cache disk save failed", exc_info=True)
+            finally:
+                with _cache_build_cv:
+                    _cache_build_in_progress = False
+                    _cache_build_cv.notify_all()
 
         def _clear_build_in_progress():
             global _cache_build_in_progress

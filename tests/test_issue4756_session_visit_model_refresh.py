@@ -155,6 +155,36 @@ def test_session_visit_fresh_disk_hit_does_not_overwrite_newer_memory_cache(tmp_
     assert cfg._available_models_cache == rebuilt_catalog
 
 
+def test_force_refresh_keeps_build_flag_set_until_disk_save_finishes(tmp_path, monkeypatch):
+    import api.config as cfg
+
+    _reset_models_memory_cache(monkeypatch)
+    rebuilt_catalog = _catalog("rebuilt-model")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}", encoding="utf-8")
+    cache_path = tmp_path / "models_cache.profile.json"
+    fingerprint = {"profile": "demo"}
+    observed = []
+
+    monkeypatch.setattr(cfg, "_get_config_path", lambda: config_path)
+    monkeypatch.setattr(cfg, "_cfg_path", config_path, raising=False)
+    monkeypatch.setattr(cfg, "_cfg_mtime", config_path.stat().st_mtime, raising=False)
+    monkeypatch.setattr(cfg, "_get_models_cache_path", lambda: cache_path)
+    monkeypatch.setattr(cfg, "_load_models_cache_from_disk", lambda: None)
+    monkeypatch.setattr(cfg, "_load_stale_models_cache_from_disk", lambda: None)
+    monkeypatch.setattr(cfg, "_models_cache_source_fingerprint", lambda: fingerprint)
+    monkeypatch.setattr(cfg, "_invoke_models_rebuild", lambda _builder: rebuilt_catalog)
+
+    def _save_and_observe(_cache):
+        observed.append(cfg._cache_build_in_progress)
+
+    monkeypatch.setattr(cfg, "_save_models_cache_to_disk", _save_and_observe)
+
+    assert cfg.get_available_models(force_refresh=True) == rebuilt_catalog
+    assert observed == [True]
+    assert cfg._cache_build_in_progress is False
+
+
 def test_default_disk_hit_does_not_restamp_stale_cache_for_session_visit(tmp_path, monkeypatch):
     import api.config as cfg
 
