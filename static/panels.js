@@ -7473,8 +7473,8 @@ async function loadSettingsPanel(){
       };
       if(structuredCodeLinesField){
         // Commit on change (blur / Enter / spinner) rather than every keystroke,
-        // so a long transcript isn't rebuilt per digit typed. Only re-render in
-        // 'auto' mode, where the threshold actually affects the default view.
+        // so a long transcript is not rebuilt per digit typed. Only re-render in
+        // auto mode, where the threshold actually affects the default view.
         structuredCodeLinesField.addEventListener('change',function(){
           const cfg=_structuredCodeViewFromUi();
           structuredCodeLinesField.value=cfg.structured_code_auto_tree_lines;
