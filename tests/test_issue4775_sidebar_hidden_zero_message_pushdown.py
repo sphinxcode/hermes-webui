@@ -238,6 +238,7 @@ def test_omit_exclude_hidden_still_returns_default_hidden_rows(monkeypatch):
 def test_default_and_unassigned_queries_send_exclude_hidden(monkeypatch):
     src = SESSIONS_JS.read_text(encoding="utf-8")
     requested_source_fn = _extract_function(src, "_requestedSessionSidebarSource")
+    project_filter_fn = _extract_function(src, "_setActiveProjectFilter")
     query_fn = _extract_function(src, "_sessionListQueryString")
     script = f"""
 global.window = {{ _showCliSessions: false }};
@@ -246,12 +247,15 @@ global._showAllProfiles = false;
 global._showArchived = false;
 global._activeProject = null;
 global.NO_PROJECT_FILTER = '__none__';
+global.renderSessionListFromCache = () => {{}};
+global.renderSessionList = () => Promise.resolve();
 {requested_source_fn}
+{project_filter_fn}
 {query_fn}
 const default_query = _sessionListQueryString();
-global._activeProject = '__none__';
+_setActiveProjectFilter('__none__');
 const unassigned_query = _sessionListQueryString();
-global._activeProject = 'demo-project';
+_setActiveProjectFilter('demo-project');
 const named_project_query = _sessionListQueryString();
 console.log(JSON.stringify({{ default_query, unassigned_query, named_project_query }}));
 """
@@ -260,6 +264,40 @@ console.log(JSON.stringify({{ default_query, unassigned_query, named_project_que
     assert body["default_query"] == "?sidebar_source=webui&exclude_hidden=1"
     assert body["unassigned_query"] == "?sidebar_source=webui&exclude_hidden=1"
     assert body["named_project_query"] == "?sidebar_source=webui"
+
+
+@pytest.mark.skipif(NODE is None, reason="node not on PATH")
+def test_project_filter_click_path_triggers_fresh_session_load():
+    src = SESSIONS_JS.read_text(encoding="utf-8")
+    project_filter_fn = _extract_function(src, "_setActiveProjectFilter")
+    script = f"""
+const calls = [];
+global.NO_PROJECT_FILTER = '__none__';
+global._activeProject = null;
+global.renderSessionListFromCache = () => {{
+  calls.push('cache');
+}};
+global.renderSessionList = (opts) => {{
+  calls.push(opts);
+  return Promise.resolve();
+}};
+{project_filter_fn}
+_setActiveProjectFilter('demo-project');
+_setActiveProjectFilter('__none__');
+console.log(JSON.stringify({{
+  activeProject: global._activeProject,
+  calls,
+}}));
+"""
+    body = _run_node(script)
+
+    assert body["activeProject"] == "__none__"
+    assert body["calls"] == [
+        "cache",
+        {"deferWhileInteracting": False},
+        "cache",
+        {"deferWhileInteracting": False},
+    ]
 
 
 def test_cache_key_varies_for_exclude_hidden_and_visible_only():

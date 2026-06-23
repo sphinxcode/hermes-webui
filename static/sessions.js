@@ -1652,6 +1652,14 @@ function _sessionSourceTabCount(filter, renderedWebuiSessionCount, renderedCliSe
   return filter === 'cli' ? renderedCliSessionCount : renderedWebuiSessionCount;
 }
 
+function _setActiveProjectFilter(projectId) {
+  const next = projectId === NO_PROJECT_FILTER ? NO_PROJECT_FILTER : (projectId || null);
+  if (_activeProject === next) return;
+  _activeProject = next;
+  renderSessionListFromCache();
+  void renderSessionList({deferWhileInteracting:false});
+}
+
 function _setSessionSourceFilter(filter) {
   const next = filter === 'cli' ? 'cli' : 'webui';
   if (_sessionSourceFilter === next) return;
@@ -5740,7 +5748,7 @@ function renderSessionListFromCache(){
     const allChip=document.createElement('span');
     allChip.className='project-chip'+(!_activeProject?' active':'');
     allChip.textContent='All';
-    allChip.onclick=()=>{_activeProject=null;renderSessionListFromCache();};
+    allChip.onclick=()=>{_setActiveProjectFilter(null);};
     bar.appendChild(allChip);
     // "Unassigned" chip — only when there are sessions with no project to
     // filter to. Hidden in the common case where every session is already
@@ -5750,7 +5758,7 @@ function renderSessionListFromCache(){
       noneChip.className='project-chip no-project'+(_activeProject===NO_PROJECT_FILTER?' active':'');
       noneChip.textContent='Unassigned';
       noneChip.title='Show conversations not yet assigned to a project';
-      noneChip.onclick=()=>{_activeProject=NO_PROJECT_FILTER;renderSessionListFromCache();};
+      noneChip.onclick=()=>{_setActiveProjectFilter(NO_PROJECT_FILTER);};
       bar.appendChild(noneChip);
     }
     // Project chips
@@ -5769,7 +5777,7 @@ function renderSessionListFromCache(){
       let _pClickTimer=null;
       chip.onclick=(e)=>{
         clearTimeout(_pClickTimer);
-        _pClickTimer=setTimeout(()=>{_pClickTimer=null;_activeProject=p.project_id;renderSessionListFromCache();},220);
+        _pClickTimer=setTimeout(()=>{_pClickTimer=null;_setActiveProjectFilter(p.project_id);},220);
       };
       chip.ondblclick=(e)=>{e.stopPropagation();clearTimeout(_pClickTimer);_pClickTimer=null;_startProjectRename(p,chip);};
       chip.oncontextmenu=(e)=>{e.preventDefault();_showProjectContextMenu(e,p,chip);};
