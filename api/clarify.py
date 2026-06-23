@@ -12,6 +12,8 @@ import time
 import uuid
 from typing import Optional
 
+from api.session_events import publish_session_list_changed
+
 
 DEFAULT_TIMEOUT_SECONDS = 120
 _lock = threading.Lock()
@@ -52,14 +54,30 @@ def unregister_gateway_notify(session_key: str) -> None:
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
         entries = _clear_queue_locked(session_key)
+    if entries:
+        publish_session_list_changed("attention_cleared")
     for entry in entries:
         entry.event.set()
 
 
 def clear_pending(session_key: str) -> int:
-    """Clear any pending clarify prompts for the session without removing the callback."""
+    """Clear any pending clarify prompts for the session without removing the callback.
+
+    Emits an SSE notify (``pending=None, total=0``) so any browser subscribed to
+    the clarify stream takes down its visible card and unlocks the composer.
+    Without this notify, the silent-timeout path in
+    ``streaming.py::_clarify_callback_impl`` cleared server state but left the
+    browser with a stuck card and a locked composer that 409'd on any submit
+    (#4504).
+    """
     with _lock:
         entries = _clear_queue_locked(session_key)
+        # Notify from inside _lock for ordering consistency with submit_pending
+        # and resolve_clarify*, which also publish under the same lock.
+        if entries:
+            _clarify_sse_notify(session_key, None, 0)
+    if entries:
+        publish_session_list_changed("attention_cleared")
     for entry in entries:
         entry.event.set()
     return len(entries)
@@ -135,6 +153,9 @@ def submit_pending(session_key: str, data: dict) -> _ClarifyEntry:
                         cb(dict(entry.data))
                     except Exception:
                         pass
+                # Safe to call while holding _lock: publish() only takes the
+                # leaf _SESSION_EVENTS_LOCK and never re-acquires this lock.
+                publish_session_list_changed("attention_pending")
                 return entry
 
         entry = _ClarifyEntry(data)
@@ -145,6 +166,7 @@ def submit_pending(session_key: str, data: dict) -> _ClarifyEntry:
         cb = _gateway_notify_cbs.get(session_key)
         # Notify SSE subscribers from inside _lock for ordering guarantees.
         _clarify_sse_notify(session_key, dict(gw_queue[0].data), len(gw_queue))
+    publish_session_list_changed("attention_pending")
     if cb:
         try:
             cb(data)
@@ -168,6 +190,15 @@ def has_pending(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def pending_count(session_key: str) -> int:
+    """Return the number of unresolved clarify prompts for a session."""
+    with _lock:
+        queue = _gateway_queues.get(session_key) or []
+        if queue:
+            return len(queue)
+        return 1 if _pending.get(session_key) else 0
+
+
 def resolve_clarify(session_key: str, response: str, resolve_all: bool = False) -> int:
     """Resolve the oldest pending clarify request for a session."""
     with _lock:
@@ -182,6 +213,7 @@ def resolve_clarify(session_key: str, response: str, resolve_all: bool = False) 
         else:
             _clear_queue_locked(session_key)
             _clarify_sse_notify(session_key, None, 0)
+    publish_session_list_changed("attention_resolved")
     count = 0
     for entry in entries:
         entry.result = response
@@ -209,6 +241,9 @@ def resolve_clarify_by_id(session_key: str, clarify_id: str, response: str) -> b
                 else:
                     _clear_queue_locked(session_key)
                     _clarify_sse_notify(session_key, None, 0)
+                # Safe to call while holding _lock: publish() only takes the
+                # leaf _SESSION_EVENTS_LOCK and never re-acquires this lock.
+                publish_session_list_changed("attention_resolved")
                 entry.result = response
                 entry.event.set()
                 return True

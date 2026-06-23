@@ -7,6 +7,7 @@ Covers:
   - _aux_title_timeout rejects zero, negative, and non-numeric values
 """
 import os
+from pathlib import Path
 import sys
 import types
 import unittest
@@ -108,6 +109,41 @@ class TestGenerateTitleRawViaAuxTimeout(unittest.TestCase):
             {'provider': '', 'model': 'gpt-4o', 'base_url': '', 'timeout': 30.0},
             30.0,
         )
+
+    def test_webui_prefixed_model_id_is_stripped_before_aux_call(self):
+        """Regression: @provider:model picker ids must not reach provider APIs verbatim."""
+        from api.streaming import generate_title_raw_via_aux
+
+        mock_resp = types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(content='Gemini Title'),
+                    finish_reason='stop',
+                )
+            ]
+        )
+        captured = {}
+
+        def fake_call_llm(**kwargs):
+            captured.update(kwargs)
+            return mock_resp
+
+        tg_config = {
+            'provider': 'gemini',
+            'model': '@gemini:gemini-3.1-flash-lite',
+            'base_url': '',
+        }
+        with _patch_tg_config(tg_config):
+            with patch('agent.auxiliary_client.call_llm', side_effect=fake_call_llm, create=True):
+                result, status = generate_title_raw_via_aux(
+                    user_text='Как настроить title generation?',
+                    assistant_text='Нужно указать auxiliary.title_generation в config.yaml.',
+                )
+
+        self.assertEqual(result, 'Gemini Title')
+        self.assertEqual(status, 'llm_aux')
+        self.assertEqual(captured.get('provider'), 'gemini')
+        self.assertEqual(captured.get('model'), 'gemini-3.1-flash-lite')
 
     def test_configured_provider_model_and_base_url_are_passed_to_aux_client(self):
         """Regression for #2235: task config must select the first title model.
@@ -304,6 +340,16 @@ class TestGenerateTitleRawViaAuxTimeout(unittest.TestCase):
         self.assertNotEqual(title, 'Alte Session Bilder')
         self.assertNotEqual(title, 'Session Bilder')
         self.assertIn('Warum', title)
+
+    def test_code_only_first_message_does_not_trigger_german_language_guard(self):
+        """Code-only starts should fall through to the neutral/default title path."""
+        from api.streaming import _detect_title_language, _title_language_mismatch, _title_prompt_language_rule
+
+        code_only = "print('hello')\nfor i in range(3):\n    print(i)"
+
+        self.assertEqual(_detect_title_language(code_only), '')
+        self.assertEqual(_title_prompt_language_rule(code_only), 'Match the language of the user question.\n')
+        self.assertFalse(_title_language_mismatch(code_only, 'Python Hello Loop'))
 
     def test_configured_api_key_is_not_sent_to_caller_supplied_route(self):
         """Regression: title task keys must not leak to explicit fallback routes.
@@ -740,7 +786,7 @@ class TestBackgroundTitleProfileRouting(unittest.TestCase):
 
         self.assertEqual(captured.get('hermes_home'), 'profile-home')
         self.assertEqual(str(captured.get('skill_module_home')), 'profile-home')
-        self.assertEqual(str(captured.get('skill_module_dir')), 'profile-home/skills')
+        self.assertEqual(Path(str(captured.get('skill_module_dir'))), Path('profile-home') / 'skills')
         self.assertEqual(captured.get('restored_hermes_home'), 'default-home')
         self.assertEqual(getattr(fake_skill_module, 'HERMES_HOME'), 'default-home')
         self.assertEqual(getattr(fake_skill_module, 'SKILLS_DIR'), 'default-home/skills')

@@ -1,5 +1,6 @@
 """Regression checks for #856 background completion unread markers."""
 
+import json
 from pathlib import Path
 
 
@@ -22,6 +23,21 @@ def _sessions_function_block(name: str, next_name: str) -> str:
     end = SESSIONS_JS.find(f"function {next_name}", start)
     assert end != -1, f"{next_name} not found after {name}"
     return SESSIONS_JS[start:end]
+
+
+def _function_body(block: str) -> str:
+    brace = block.find("{")
+    assert brace != -1, "function opening brace not found"
+    depth = 0
+    for i in range(brace, len(block)):
+        ch = block[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return block[brace + 1 : i]
+    raise AssertionError("function closing brace not found")
 
 
 def test_background_completion_unread_uses_explicit_marker_not_message_delta():
@@ -100,7 +116,9 @@ def test_sidebar_cache_completion_handles_compression_session_rotation():
 
     assert "function _markSessionCompletedInList(session, previousSid = null)" in helper_block
     assert "const finalSid = session.session_id || previousSid;" in helper_block
-    assert "s.session_id === finalSid || s.session_id === previousSid" in helper_block
+    assert "const finalIdx = _allSessions.findIndex(s => s && s.session_id === finalSid);" in helper_block
+    assert "const previousIdx = previousSid ? _allSessions.findIndex(s => s && s.session_id === previousSid) : -1;" in helper_block
+    assert "const idx = finalIdx >= 0 ? finalIdx : previousIdx;" in helper_block
     assert "const {messages: _messages, tool_calls: _toolCalls, ...sessionMeta} = session;" in helper_block
     assert "...sessionMeta" in helper_block
     assert "session_id: finalSid" in helper_block
@@ -115,13 +133,15 @@ def test_polling_transition_marks_completion_unread_without_sse_done():
         "_markPollingCompletionUnreadTransitions",
         "newSession",
     )
-    effective_block = _sessions_function_block(
+    effective_block = _function_body(_sessions_function_block(
         "_isSessionEffectivelyStreaming",
         "_markPollingCompletionUnreadTransitions",
-    )
+    ))
     render_idx = SESSIONS_JS.find("async function renderSessionList")
     assert render_idx != -1, "renderSessionList not found"
-    render_block = SESSIONS_JS[render_idx:SESSIONS_JS.find("// ── Gateway session SSE", render_idx)]
+    refresh_idx = SESSIONS_JS.find("async function _runRenderSessionListRefresh")
+    assert refresh_idx != -1, "_runRenderSessionListRefresh not found"
+    refresh_block = SESSIONS_JS[refresh_idx:SESSIONS_JS.find("async function _drainRenderSessionListQueue", refresh_idx)]
 
     apply_idx = SESSIONS_JS.find("function _applySessionListPayload(")
     assert apply_idx != -1, "_applySessionListPayload not found"
@@ -130,14 +150,114 @@ def test_polling_transition_marks_completion_unread_without_sse_done():
     assert "const _sessionStreamingById = new Map();" in SESSIONS_JS
     assert "const wasStreaming = _sessionStreamingById.get(sid);" in transition_block
     assert "const isStreaming = _isSessionEffectivelyStreaming(s);" in transition_block
-    assert "s.is_streaming || _isSessionLocallyStreaming(s)" in effective_block
+    assert "s.is_streaming" in effective_block
+    assert "s.active_stream_id" not in effective_block
+    assert "_hasPendingUserMessageSignal(s)" in effective_block
+    assert "s.pending_started_at" not in effective_block
+    assert "_isSessionLocallyStreaming(s)" in effective_block
     assert "wasStreaming === true && !isStreaming" in transition_block, (
         "polling fallback must only fire on an observed streaming -> stopped transition"
     )
     assert "_markSessionCompletionUnread(sid, s.message_count);" in transition_block
     assert "_sessionStreamingById.set(sid, isStreaming);" in transition_block
-    assert "_applySessionListPayload(sessData,projData);" in render_block
+    assert "_applySessionListPayload(sessData,projData);" in refresh_block
     assert "_markPollingCompletionUnreadTransitions(_allSessions);" in apply_block
+    assert "_allSessions.some(s => _isSessionEffectivelyStreaming(s))" in apply_block, (
+        "the streaming poll fallback must stay active for the same server-confirmed "
+        "streaming states that can render a sidebar spinner"
+    )
+
+
+def test_polling_transition_ignores_stale_active_stream_id_without_server_streaming():
+    local_body = _function_body(_sessions_function_block(
+        "_isSessionLocallyStreaming",
+        "_isSessionEffectivelyStreaming",
+    ))
+    effective_body = _function_body(_sessions_function_block(
+        "_isSessionEffectivelyStreaming",
+        "_markPollingCompletionUnreadTransitions",
+    ))
+    transition_body = _function_body(_sessions_function_block(
+        "_markPollingCompletionUnreadTransitions",
+        "newSession",
+    ))
+
+    script = f"""
+let S = {{ session: null, busy: false }};
+const unread = [];
+const _sessionStreamingById = new Map([['stale', true]]);
+const _sessionListSnapshotById = new Map();
+function _isSessionLocallyStreaming(s) {{{local_body}}}
+function _hasPendingUserMessageSignal(s) {{ return !!(s && (s.pending_user_message || s.has_pending_user_message)); }}
+function _isSessionEffectivelyStreaming(s) {{{effective_body}}}
+function _hasSessionCompletionUnread() {{ return false; }}
+function _markSessionCompletionUnread(sid) {{ unread.push(sid); }}
+function _isSessionActivelyViewedForList() {{ return false; }}
+function _rememberObservedStreamingSession() {{}}
+function _forgetObservedStreamingSession() {{}}
+function _getSessionObservedStreaming() {{ return {{}}; }}
+function _markPollingCompletionUnreadTransitions(sessions) {{{transition_body}}}
+_markPollingCompletionUnreadTransitions([{{
+  session_id:'stale',
+  is_streaming:false,
+  active_stream_id:'dead-stream',
+  message_count:5,
+  last_message_at:10,
+  updated_at:10,
+}}]);
+console.log(JSON.stringify({{unread, observed:_sessionStreamingById.get('stale')}}));
+"""
+    import subprocess
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == {"unread": [], "observed": False}
+
+
+# The observed-streaming marker is persisted across reloads, unlike in-memory snapshots.
+def test_polling_transition_marks_persisted_observed_stream_after_reload():
+    local_body = _function_body(_sessions_function_block(
+        "_isSessionLocallyStreaming",
+        "_isSessionEffectivelyStreaming",
+    ))
+    effective_body = _function_body(_sessions_function_block(
+        "_isSessionEffectivelyStreaming",
+        "_markPollingCompletionUnreadTransitions",
+    ))
+    transition_body = _function_body(_sessions_function_block(
+        "_markPollingCompletionUnreadTransitions",
+        "newSession",
+    ))
+
+    script = f"""
+let S = {{ session: null, busy: false }};
+const unread = [];
+const _sessionStreamingById = new Map();
+const _sessionListSnapshotById = new Map();
+function _isSessionLocallyStreaming(s) {{{local_body}}}
+function _hasPendingUserMessageSignal(s) {{ return !!(s && (s.pending_user_message || s.has_pending_user_message)); }}
+function _isSessionEffectivelyStreaming(s) {{{effective_body}}}
+function _hasSessionCompletionUnread() {{ return false; }}
+function _markSessionCompletionUnread(sid) {{ unread.push(sid); }}
+function _isSessionActivelyViewedForList() {{ return false; }}
+let observed = {{
+  done: {{message_count: 5, last_message_at: 10}}
+}};
+function _rememberObservedStreamingSession() {{}}
+function _forgetObservedStreamingSession(sid) {{ delete observed[sid]; }}
+function _getSessionObservedStreaming() {{ return observed; }}
+function _markPollingCompletionUnreadTransitions(sessions) {{{transition_body}}}
+_markPollingCompletionUnreadTransitions([{{
+  session_id:'done',
+  is_streaming:false,
+  active_stream_id:null,
+  message_count:5,
+  last_message_at:10,
+  updated_at:10,
+}}]);
+console.log(JSON.stringify({{unread, observed, streaming:_sessionStreamingById.get('done')}}));
+"""
+    import subprocess
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == {"unread": ["done"], "observed": {}, "streaming": False}
 
 
 def test_polling_transition_does_not_mark_historical_first_render():
@@ -183,18 +303,22 @@ def test_polling_transition_tracks_the_same_effective_streaming_state_as_sidebar
         "_isSessionLocallyStreaming",
         "_isSessionEffectivelyStreaming",
     )
-    effective_block = _sessions_function_block(
+    effective_block = _function_body(_sessions_function_block(
         "_isSessionEffectivelyStreaming",
         "_markPollingCompletionUnreadTransitions",
-    )
+    ))
     render_idx = SESSIONS_JS.find("function _renderOneSession")
     assert render_idx != -1, "_renderOneSession not found"
     render_block = SESSIONS_JS[render_idx:SESSIONS_JS.find("const hasUnread=", render_idx)]
 
     assert "isActive && Boolean(S.busy)" in local_block
     assert "INFLIGHT && INFLIGHT[s.session_id]" not in local_block
-    assert "s.is_streaming || _isSessionLocallyStreaming(s)" in effective_block
-    assert "const isStreaming=_isSessionEffectivelyStreaming(s);" in render_block, (
+    assert "s.is_streaming" in effective_block
+    assert "s.active_stream_id" not in effective_block
+    assert "_hasPendingUserMessageSignal(s)" in effective_block
+    assert "s.pending_started_at" not in effective_block
+    assert "_isSessionLocallyStreaming(s)" in effective_block
+    assert "const ownStreaming=_isSessionEffectivelyStreaming(s)" in render_block, (
         "the row spinner and polling completion transition must use the same "
         "effective streaming source, including local INFLIGHT-only streams"
     )
@@ -211,8 +335,8 @@ def test_cache_render_seeds_streaming_transition_state_for_visible_spinners():
 
     assert "if (!s || !s.session_id || !isStreaming) return;" in remember_block
     assert "_sessionStreamingById.set(s.session_id, true);" in remember_block
-    assert "const isStreaming=_isSessionEffectivelyStreaming(s);" in render_block
-    assert "_rememberRenderedStreamingState(s, isStreaming);" in render_block, (
+    assert "const ownStreaming=_isSessionEffectivelyStreaming(s)" in render_block
+    assert "_rememberRenderedStreamingState(s, ownStreaming);" in render_block, (
         "renderSessionListFromCache can display a spinner from local INFLIGHT "
         "state before a full poll runs, so it must seed the transition map too"
     )
@@ -310,7 +434,7 @@ def test_hidden_active_done_still_updates_current_pane_but_not_read_state():
     active_guard_idx = done_block.find("if(isActiveSession){", viewed_const_idx)
     session_update_idx = done_block.find("S.session=d.session", active_guard_idx)
     render_idx = done_block.find("renderMessages(", active_guard_idx)
-    load_dir_idx = done_block.find("loadDir('.')", active_guard_idx)
+    load_dir_idx = done_block.find("preservePreview", active_guard_idx)
     mark_viewed_idx = done_block.find("if(isSessionViewed) _markSessionViewed(completedSid", active_guard_idx)
 
     assert active_const_idx != -1, "done handler must compute active/current pane separately"
@@ -359,7 +483,7 @@ def test_switching_away_counts_as_background_completion():
 
 
 def test_restore_settled_background_stream_marks_completion_unread():
-    restore_idx = MESSAGES_JS.find("async function _restoreSettledSession(source)")
+    restore_idx = MESSAGES_JS.find("async function _restoreSettledSession(source")
     assert restore_idx != -1, "_restoreSettledSession(source) not found"
     restore_block = MESSAGES_JS[restore_idx:MESSAGES_JS.find("function _handleStreamError", restore_idx)]
 

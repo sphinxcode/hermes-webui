@@ -33,25 +33,32 @@ def test_session_list_refresh_does_not_close_open_conversation_actions():
 
 def test_archive_action_repaints_sidebar_before_full_refresh():
     """Archive should hide the row from cached sidebar state before /api/sessions returns."""
-    body = _function_block(SESSIONS_JS, "_openSessionActionMenu")
+    menu_body = _function_block(SESSIONS_JS, "_openSessionActionMenu")
+    helper_body = _function_block(SESSIONS_JS, "_archiveSession")
 
     api_call = "const response=await api('/api/session/archive'"
-    optimistic = "_optimisticallyArchiveSessionInList(session.session_id,!session.archived);"
+    optimistic = "if(cached) cached.archived=archived;"
+    cached_render = "renderSessionListFromCache();"
     full_refresh = "void renderSessionList();"
 
-    assert optimistic in body
-    assert body.index(api_call) < body.index(optimistic) < body.index(full_refresh)
+    assert "await _archiveSession(session,!session.archived);" in menu_body
+    assert optimistic in helper_body
+    assert helper_body.index(api_call) < helper_body.index(optimistic) < helper_body.index(cached_render) < helper_body.index(full_refresh)
 
 
 def test_delete_action_repaints_sidebar_before_loading_remaining_sessions():
     """Delete should remove the row locally before loading replacement session data."""
     body = _function_block(SESSIONS_JS, "deleteSession")
 
-    api_call = "response=await api('/api/session/delete'"
+    api_call = "const deleteRequest=api('/api/session/delete'"
     optimistic = "_optimisticallyRemoveSessionFromList(sid);"
-    remaining_fetch = "const remaining=await api('/api/sessions');"
-    full_refresh = "void renderSessionList();"
+    remaining_fetch = "const remaining=await api('/api/sessions'+_sessionListQueryString());"
+    full_refresh = "await renderSessionList();"
 
     assert optimistic in body
     assert body.index(api_call) < body.index(optimistic) < body.index(full_refresh)
     assert body.index(optimistic) < body.index(remaining_fetch)
+
+def test_batch_delete_remaining_session_fetch_uses_sidebar_query_string():
+    """Batch delete must reload the default sidebar through the same query builder."""
+    assert SESSIONS_JS.count("const remaining=await api('/api/sessions'+_sessionListQueryString());") >= 2
