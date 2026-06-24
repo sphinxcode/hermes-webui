@@ -6145,6 +6145,7 @@ def _merged_session_messages_for_display(session, cli_messages=None) -> list:
                     sidecar_messages,
                     cli_messages,
                     truncation_watermark=getattr(session, "truncation_watermark", None),
+                    truncation_boundary=getattr(session, "truncation_boundary", None),
                 )
             merged_messages = []
             seen_message_keys = set()
@@ -9550,6 +9551,7 @@ def handle_get(handler, parsed) -> bool:
                         _webui_sidecar_lineage_messages_for_display(s),
                         state_db_messages,
                         truncation_watermark=getattr(s, "truncation_watermark", None),
+                        truncation_boundary=getattr(s, "truncation_boundary", None),
                     )
                     _all_msgs = _merged_webui_lineage_messages_for_display(s, _all_msgs)
             else:
