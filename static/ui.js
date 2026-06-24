@@ -11010,6 +11010,26 @@ function _restoreMessageScrollSnapshot(snapshot){
     else requestAnimationFrame(()=>{ setTimeout(()=>{ _programmaticScroll=false; },0); });
   }
 }
+/**
+ * Mobile scroll-jank guard: temporarily re-enable overflow-anchor so the
+ * browser preserves scroll position across the innerHTML='' + DOM rebuild gap.
+ * Safari/Chrome on iOS/Android can paint a frame with scrollTop=0 between
+ * innerHTML='' and snapshot restore, scroll-janking the user to the top.
+ * Called from renderMessages() before the DOM wipe — not from streaming ticks,
+ * since CSS already gives overflow-anchor:auto on mobile via media query.
+ */
+window._fixMobileScrollJank=function _fixMobileScrollJank(){
+  const el=document.getElementById('messages');
+  if(!el) return;
+  // Desktop with a mouse: keep overflow-anchor:none (explicitly set by CSS).
+  // Mobile touch devices only: temporarily enable it.
+  if(window.matchMedia('(hover:hover) and (pointer:fine)').matches) return;
+  el.style.overflowAnchor='auto';
+  requestAnimationFrame(()=>{
+    if(el.style.overflowAnchor==='auto') el.style.overflowAnchor='';
+  });
+};
+
 function _restoreMessageScrollSnapshotSameFrame(snapshot){
   const el=$('messages');
   if(!el||!snapshot) return;
@@ -11244,6 +11264,11 @@ function renderMessages(options){
       _recycleStash.set(Number(key), child);
     }
   }
+  // Mobile scroll-jank fix: temporarily re-enable overflow-anchor so browser
+  // preserves scroll position across the DOM wipe-and-rebuild gap.
+  // Safari/Chrome on iOS/Android can paint a frame with scrollTop=0 between
+  // innerHTML='' and snapshot restore, scroll-janking the user to the top.
+  if(window._fixMobileScrollJank) window._fixMobileScrollJank();
   inner.innerHTML='';
   const compressionNode=compressionState?_compressionCardsNode(compressionState):null;
   const {message:referenceMessage, rawIdx:referenceMessageRawIdx}=_latestCompressionReferenceMessage(
