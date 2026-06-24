@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+## [v0.51.628] — 2026-06-24 — Release WI (no ghost messages after edit/retry/undo)
+
+### Fixed
+
+- **Editing a message (or `/retry` / `/undo`) no longer resurrects the replaced messages — and stops feeding them back into the agent's context.** After an edit/retry/undo, switching away and back used to bring the original pre-edit message and its reply back into the transcript (and into the model's context window, polluting the conversation). The append-only state.db merge now ADVANCES the truncation watermark to the new turn instead of clearing it, and persists the original truncate cutoff (`truncation_boundary`) separately so cold-load/crash recovery can tell a legitimate prefix from a deleted suffix — instead of guessing. Covers editing an older message that leaves several later turns, same-second edits, and the recovery window where the new turn is saved but its reply only exists in state.db. The `#2914` truncate-to-empty block and `#3346` repeated-identical-turn handling are preserved. Thanks @AlexeyDsov. (#4772, closes #4767)
+
 ## [v0.51.627] — 2026-06-24 — Release WH (Tasks cron APIs survive a shadowing top-level `cron` package)
 
 ### Fixed
