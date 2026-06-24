@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+## [v0.51.614] — 2026-06-23 — Release VU (Kanban consolidated view toggle)
+
+### Added
+
+- **The Kanban board can now switch between a per-profile lane view and a consolidated view.** A new toggle in the board header flips between "Lanes by profile" (tasks grouped into a horizontal lane per assignee — the existing default) and "Consolidated view" (a single set of columns with every assignee's tasks merged). The choice is saved per board (`lane_by_profile`), and the default stays lanes-by-profile so existing boards are unchanged unless you opt in. The consolidated view only regroups the tasks already returned for the board — it applies no new visibility and exposes nothing that the lane view didn't. Thanks @stefan-wisbric. (#2814)
+
 ## [v0.51.613] — 2026-06-23 — Release VT (eliminate O(DOM) streaming render freeze on long answers)
 
 ### Fixed
