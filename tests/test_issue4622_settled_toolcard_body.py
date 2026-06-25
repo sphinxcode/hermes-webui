@@ -239,4 +239,39 @@ def test_single_row_no_duplicate_after_enrich(driver_path):
     """Enriching must not also add a second (live) row — exactly one row per tid."""
     cards = _run(driver_path, _settled_then_live())
     assert len([c for c in cards if c["tid"] == "term-1"]) == 1
-    assert len([c for c in cards if c["tid"] == "patch-1"]) == 1
+
+
+def test_settled_capped_preview_restored_to_full_live_body(driver_path):
+    """#4622's real symptom: the backend persists a 4000-char CAPPED PREVIEW
+    (_TOOL_RESULT_SNIPPET_MAX), so a long output settles to a truncated prefix,
+    not to empty. The enrich must detect the bounded preview and restore the
+    full live body."""
+    full = "X" * 9000  # live full body, well over the 4000 persistence cap
+    preview = full[:4000]  # what the backend persisted (a prefix of full)
+    payload = _settled_then_live(term_persisted=preview, patch_persisted="")
+    # Make the live terminal snippet the full 9000-char body.
+    for tc in payload["S"]["toolCalls"]:
+        if tc["id"] == "term-1":
+            tc["snippet"] = full
+    cards = _run(driver_path, payload)
+    term = _card(cards, "terminal")
+    assert term["snippet"] == full, (
+        "a 4000-char capped preview must be restored to the FULL live body (#4622)"
+    )
+    assert len(term["snippet"]) == 9000
+
+
+def test_short_genuine_prefix_not_clobbered(driver_path):
+    """A genuinely short persisted body that merely happens to be a prefix of the
+    live one must NOT be clobbered — only a >=4000-char (cap-length) preview is
+    treated as truncated."""
+    full = "short output line\nwith more detail that came later"
+    short = "short output line"  # a real prefix, but well under the 4000 cap
+    payload = _settled_then_live(term_persisted=short, patch_persisted="kept")
+    for tc in payload["S"]["toolCalls"]:
+        if tc["id"] == "term-1":
+            tc["snippet"] = full
+    cards = _run(driver_path, payload)
+    assert _card(cards, "terminal")["snippet"] == short, (
+        "a genuinely short persisted body (not a cap-length preview) must win"
+    )

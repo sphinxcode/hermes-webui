@@ -2564,7 +2564,23 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     // (||payload.result||payload.output) as the card output + diff source, so
     // restore the snippet onto both tool+payload when the settled row has none.
     const liveSnippet=_anchorSceneStringPayload(live.snippet||live.result||live.output);
-    if(liveSnippet&&_empty(tool.snippet)&&_empty(payload.snippet)){
+    // Restore the live body when the settled snippet is missing OR is a bounded
+    // preview of the live one. The backend persists a capped preview
+    // (_TOOL_RESULT_SNIPPET_MAX = 4000 chars in api/streaming.py), so a long
+    // terminal/tool output settles to that 4000-char prefix, not to empty —
+    // #4622's actual symptom. Treat a settled snippet as restorable when the
+    // live snippet is strictly longer AND the settled value is a prefix of it
+    // AND the settled value is at/over the persistence cap (i.e. it's a
+    // truncated preview, not a genuinely short real value we must not clobber).
+    const _SETTLED_SNIPPET_CAP=4000;
+    const _isBoundedPreview=(settled,full)=>(
+      typeof settled==='string'&&typeof full==='string'&&
+      full.length>settled.length&&settled.length>=_SETTLED_SNIPPET_CAP&&
+      full.startsWith(settled)
+    );
+    const _settledSnippet=(!_empty(tool.snippet)?tool.snippet:(!_empty(payload.snippet)?payload.snippet:''));
+    const _snippetRestorable=(_empty(tool.snippet)&&_empty(payload.snippet))||_isBoundedPreview(_settledSnippet,liveSnippet);
+    if(liveSnippet&&_snippetRestorable){
       tool.snippet=liveSnippet; payload.snippet=liveSnippet; enriched=true;
     }
     // Command (shell detail-lead) + args (diff/input reconstruction, the "Full" tab).
