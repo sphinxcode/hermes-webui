@@ -1996,6 +1996,108 @@ function _buildSkinPicker(activeSkin){
   _syncSkinPicker((activeSkin||'default').toLowerCase());
 }
 
+// ── Extension-registered skins (theme-registration capability) ───────────────
+// Lets a trusted local extension contribute a custom skin that appears in the
+// NATIVE skin picker (rather than bolting on a parallel theme switcher). An
+// extension calls window.registerHermesSkin(descriptor); core validates +
+// sanitizes it, injects a managed <style> rule for its CSS-variable tokens,
+// appends it to _SKINS so the picker renders it, and re-applies the persisted
+// selection if it was waiting on this (late-registered) skin.
+//
+// Security: token values are written into CSS, so every value is sanitized
+// against a strict allowlist HERE, once, so all theme extensions inherit the
+// guard safe-by-construction. Reserved core skin keys cannot be overwritten.
+const _EXT_SKIN_STYLE_ID='hermesExtensionSkinStyles';
+const _EXT_SKIN_KEYS=new Set();                 // keys we registered (for idempotent re-register)
+const _RESERVED_SKIN_KEYS=new Set((_SKINS||[]).map(s=>(s.value||s.name).toLowerCase()));
+// CSS custom-property names a skin is allowed to set. Mirrors the documented
+// design-token contract; anything outside this set is dropped.
+const _ALLOWED_SKIN_TOKENS=new Set([
+  '--bg','--surface','--surface2','--text','--text2','--muted',
+  '--accent','--accent2','--accent3','--accent-contrast',
+  '--border','--border2','--hover-bg','--code-bg','--code-text',
+  '--sidebar','--sidebar-text','--user-bubble','--assistant-bubble',
+  '--success','--warning','--danger','--info','--link'
+]);
+// Accept only safe color / simple numeric-with-unit values. Rejects anything
+// with url(), expression(), semicolons, braces, or other CSS-injection vectors.
+const _SAFE_SKIN_VALUE_RE=/^(#(?:[0-9a-fA-F]{3,8})|rg(?:b|ba)\(\s*[0-9.,%\s/]+\)|hsl(?:a)?\(\s*[0-9.,%\s/deg]+\)|[a-zA-Z]{3,20}|[0-9.]+(?:px|em|rem|%)?)$/;
+
+function _sanitizeSkinTokens(tokens){
+  const out={};
+  if(!tokens||typeof tokens!=='object') return out;
+  for(const rawKey of Object.keys(tokens)){
+    const key=String(rawKey).trim();
+    if(!_ALLOWED_SKIN_TOKENS.has(key)) continue;          // unknown token → drop
+    const val=String(tokens[rawKey]).trim();
+    if(val.length>64) continue;                            // absurd length → drop
+    if(!_SAFE_SKIN_VALUE_RE.test(val)) continue;          // unsafe value → drop
+    out[key]=val;
+  }
+  return out;
+}
+
+function _renderExtensionSkinStyles(){
+  let styleEl=document.getElementById(_EXT_SKIN_STYLE_ID);
+  if(!styleEl){
+    styleEl=document.createElement('style');
+    styleEl.id=_EXT_SKIN_STYLE_ID;
+    document.head.appendChild(styleEl);
+  }
+  const blocks=[];
+  for(const skin of _SKINS){
+    if(!skin||!skin._extToken) continue;                  // only ext-registered skins
+    const key=(skin.value||skin.name).toLowerCase();
+    const decls=Object.keys(skin._extToken).map(k=>`${k}:${skin._extToken[k]}`).join(';');
+    if(decls) blocks.push(`:root[data-skin="${key}"]{${decls}}`);
+  }
+  styleEl.textContent=blocks.join('\n');
+}
+
+// Public API for extensions. Returns true on success, false if rejected.
+function registerHermesSkin(descriptor){
+  try{
+    if(!descriptor||typeof descriptor!=='object') return false;
+    const name=String(descriptor.name||'').trim();
+    if(!name) return false;
+    const rawVal=String(descriptor.value||name).trim().toLowerCase();
+    // key must be a simple slug (safe as a data-skin attr + CSS attr selector)
+    const key=rawVal.replace(/[^a-z0-9_-]/g,'');
+    if(!key) return false;
+    if(_RESERVED_SKIN_KEYS.has(key)) return false;        // never shadow a core skin
+    const tokens=_sanitizeSkinTokens(descriptor.tokens);
+    if(Object.keys(tokens).length===0) return false;      // nothing valid to apply
+    // 3 swatch colors for the picker (sanitized); fall back to accent/bg/text.
+    let colors=Array.isArray(descriptor.colors)?descriptor.colors.slice(0,3):[];
+    colors=colors.map(c=>String(c).trim()).filter(c=>_SAFE_SKIN_VALUE_RE.test(c));
+    while(colors.length<3) colors.push(tokens['--accent']||tokens['--bg']||tokens['--text']||'#888');
+    const label=String(descriptor.label||name).slice(0,40);
+    const entry={name:name.slice(0,40),value:key,label,colors,_extToken:tokens,_extension:true};
+
+    const existingIdx=_SKINS.findIndex(s=>(s.value||s.name).toLowerCase()===key);
+    if(existingIdx>=0&&_EXT_SKIN_KEYS.has(key)){
+      _SKINS[existingIdx]=entry;                           // idempotent update
+    }else if(existingIdx>=0){
+      return false;                                        // collides w/ a non-ext skin
+    }else{
+      _SKINS.push(entry);
+    }
+    _EXT_SKIN_KEYS.add(key);
+    _VALID_SKINS.add(key);
+    _renderExtensionSkinStyles();
+    // Refresh the picker if it's already built.
+    if(document.getElementById('skinPickerGrid')){
+      _buildSkinPicker((localStorage.getItem('hermes-skin')||'default').toLowerCase());
+    }
+    // If the user had previously selected this (now-available) skin, apply it.
+    if((localStorage.getItem('hermes-skin')||'').toLowerCase()===key){
+      _applySkin(key);
+    }
+    return true;
+  }catch(_){ return false; }
+}
+if(typeof window!=='undefined') window.registerHermesSkin=registerHermesSkin;
+
 function applyBotName(){
   // The saved assistant name applies to the default profile only.
   // Non-default profiles use their own profile names.
