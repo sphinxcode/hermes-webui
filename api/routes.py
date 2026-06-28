@@ -14970,7 +14970,9 @@ def _handle_tts(handler, parsed):
             from api.helpers import bad as _bad
             return _bad(handler, "OpenAI API key not configured", 503)
 
-        base_url = "https://api.openai.com/v1"
+        from urllib.parse import urlunsplit as _urlunsplit
+
+        base_url = _urlunsplit(("https", "api.openai.com", "/v1", "", ""))
         model = "gpt-4o-mini-tts"
         oai_voice = "alloy"
         try:
