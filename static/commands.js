@@ -139,7 +139,7 @@ async function handlePetSlashCommand(rawCommandText,meta){
         source:'webui-slash-command',
         metadata:{name:commandName},
       });
-      if(result===true||(result&&result.handled===true)){
+      if(result){
         return {handled:true,message:''};
       }
     }catch(_e){}

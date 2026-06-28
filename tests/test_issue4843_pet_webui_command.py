@@ -324,6 +324,36 @@ def test_pet_help_hands_off_to_desktop_companion_hook_when_connected():
     ]
 
 
+def test_pet_help_treats_truthy_hook_result_as_handled():
+    result = _run_pet_js(
+        status={
+            "enabled": True,
+            "extensions": [
+                {
+                    "id": "desktop-companion",
+                    "name": "Desktop Companion",
+                    "effective_enabled": True,
+                    "user_disabled": False,
+                    "status": "enabled",
+                }
+            ],
+        },
+        adapter_status={"connected": True},
+        hook_result="mascot handled",
+        command="/pet wave",
+    )
+
+    assert result["result"] == {"handled": True, "message": ""}
+    assert result["hookCalls"] == [
+        {
+            "command": "/pet wave",
+            "args": "wave",
+            "source": "webui-slash-command",
+            "metadata": {"name": "pet"},
+        }
+    ]
+
+
 def test_pet_help_falls_back_when_hook_is_missing_or_fails():
     absent = _run_pet_js(
         status={
