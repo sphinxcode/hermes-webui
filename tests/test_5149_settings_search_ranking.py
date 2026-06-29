@@ -387,6 +387,10 @@ function setupDom(mode) {
       descriptionI18nKey: 'settings_desc_priority_only',
     }));
     conversation.appendChild(makeSettingsField({
+      labelText: 'Blob field',
+      descriptionText: 'priority appears only in this plain-text fallback',
+    }));
+    conversation.appendChild(makeSettingsField({
       labelText: 'Priority title field',
       descriptionI18nKey: 'settings_desc_irrelevant',
     }));
@@ -394,6 +398,10 @@ function setupDom(mode) {
     conversation.appendChild(makeSettingsField({
       labelText: 'Value-later field',
       descriptionI18nKey: 'settings_desc_rank_only',
+    }));
+    conversation.appendChild(makeSettingsField({
+      labelText: 'Blob value field',
+      descriptionText: 'rank only lives in this plain-text fallback text',
     }));
     conversation.appendChild(makeSettingsField({
       labelText: 'Value field',
@@ -417,6 +425,12 @@ function setupDom(mode) {
       labelText: 'Visible Label',
       options: ['token-label-option'],
       descriptionText: 'description with token-label-option',
+    }));
+  } else if (mode === 'supplemental-term') {
+    conversation.appendChild(makeSettingsField({
+      labelText: 'Supplemental alias field',
+      descriptionText: 'description without the alias query',
+      settingsSearch: 'steer alias query',
     }));
   } else if (mode === 'twelve-result-cap') {
     for (let i = 0; i < 13; i++) {
@@ -485,8 +499,9 @@ function runScenario(command) {
       else if (command === 'value-vs-description') query = 'rank';
       else if (command === 'same-tier-order') query = 'needle';
       else if (command === 'label-rendering') query = 'token-label-option';
+      else if (command === 'supplemental-term') query = 'steer alias';
       else if (command === 'twelve-result-cap') query = 'shared';
-      else if (command === 'provider-plugin') query = 'plugin';
+      else if (command === 'provider-plugin') query = scenario.query || 'plugin';
       await filterSettings(query);
 
       const results = $('settingsSearchResults');
@@ -531,7 +546,12 @@ def driver_file(driver_path):
 
 def _run_driver(driver_file, command):
     process = subprocess.run(
-        [NODE, driver_file, str(PANELS_JS), json.dumps({"command": command})],
+        [
+            NODE,
+            driver_file,
+            str(PANELS_JS),
+            json.dumps(command if isinstance(command, dict) else {"command": command}),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -545,12 +565,16 @@ def _run_driver(driver_file, command):
 def test_title_matches_outrank_descriptor_only(driver_file):
     payload = _run_driver(driver_file, "title-vs-description")
     assert payload["labels"][0] == "Priority title field"
+    assert payload["labels"][1] == "Descriptor-only field"
+    assert payload["labels"][2] == "Blob field"
     assert not payload["noResults"]
 
 
 def test_value_or_option_match_outranks_descriptor_match(driver_file):
     payload = _run_driver(driver_file, "value-vs-description")
     assert payload["labels"][0] == "Value field"
+    assert payload["labels"][1] == "Value-later field"
+    assert payload["labels"][2] == "Blob value field"
     assert not payload["noResults"]
 
 
@@ -566,6 +590,11 @@ def test_rendered_label_is_visible_field_title(driver_file):
     assert payload["labels"][0] == "Visible Label"
 
 
+def test_supplemental_search_terms_remain_behaviorally_searchable(driver_file):
+    payload = _run_driver(driver_file, "supplemental-term")
+    assert payload["labels"] == ["Supplemental alias field"]
+
+
 def test_results_cap_still_applies_to_ranked_matches(driver_file):
     payload = _run_driver(driver_file, "twelve-result-cap")
     assert payload["resultCount"] == 12
@@ -573,5 +602,18 @@ def test_results_cap_still_applies_to_ranked_matches(driver_file):
 
 
 def test_provider_and_plugin_cards_remain_searchable(driver_file):
-    payload = _run_driver(driver_file, "provider-plugin")
-    assert "Plugin Sample" in payload["labels"]
+    provider_payload = _run_driver(
+        driver_file,
+        {"command": "provider-plugin", "query": "alpha"},
+    )
+    field_payload = _run_driver(
+        driver_file,
+        {"command": "provider-plugin", "query": "key"},
+    )
+    plugin_payload = _run_driver(
+        driver_file,
+        {"command": "provider-plugin", "query": "plugin"},
+    )
+    assert "Provider Alpha" in provider_payload["labels"]
+    assert "Provider Alpha API Key" in field_payload["labels"]
+    assert "Plugin Sample" in plugin_payload["labels"]

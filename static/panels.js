@@ -7125,9 +7125,6 @@ async function filterSettings(query) {
     if (left.score.bucketIndex !== right.score.bucketIndex) {
       return left.score.bucketIndex - right.score.bucketIndex;
     }
-    if (left.score.matchType !== right.score.matchType) {
-      return left.score.matchType === 'prefix' ? -1 : 1;
-    }
     if (left.score.matchIndex !== right.score.matchIndex) {
       return left.score.matchIndex - right.score.matchIndex;
     }
