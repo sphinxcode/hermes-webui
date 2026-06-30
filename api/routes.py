@@ -5079,6 +5079,31 @@ def _onboarding_gate_allows(handler, auth_enabled: bool | None = None) -> bool:
     return _onboarding_request_is_local(handler)
 
 
+# Operator-facing copy reused by every embedded-terminal endpoint refusal.
+_EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE = (
+    "Embedded terminal is only available from local networks when authentication "
+    "is not configured. Configure a password/passkey, or set "
+    "HERMES_WEBUI_ONBOARDING_OPEN=1 to allow it on a deliberately-exposed server."
+)
+
+
+def _embedded_terminal_gate_allows(handler) -> bool:
+    """Local-origin gate for the embedded-terminal endpoints.
+
+    The embedded terminal spawns a PTY shell that runs arbitrary commands as the
+    server-process user, so admitting an unauthenticated remote caller is remote
+    code execution. When auth is enabled, ``check_auth()`` has already verified
+    the session cookie before the request reaches these handlers, so this returns
+    True. When auth is DISABLED (the default out-of-the-box state) ``check_auth()``
+    admits every caller unconditionally, so restrict the terminal to local/private
+    origins — the same trust model the onboarding/bootstrap endpoints use, ignoring
+    spoofable forwarded headers unless an operator has opted into trusting them.
+    A deliberately-exposed passwordless server (access secured at another layer)
+    opts out with ``HERMES_WEBUI_ONBOARDING_OPEN=1``.
+    """
+    return _onboarding_gate_allows(handler)
+
+
 def _csp_report_rate_limited(handler, *, now: float | None = None) -> bool:
     now = time.time() if now is None else now
     key = _client_ip_for_rate_limit(handler)
@@ -14952,6 +14977,8 @@ def _terminal_remote_backend_enabled() -> bool:
 
 def _handle_terminal_start(handler, body):
     try:
+        if not _embedded_terminal_gate_allows(handler):
+            return bad(handler, _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE, 403)
         sid, session = _terminal_session_lookup(body)
         if _terminal_remote_backend_enabled():
             return j(
@@ -14990,6 +15017,8 @@ def _handle_terminal_start(handler, body):
 
 def _handle_terminal_input(handler, body):
     try:
+        if not _embedded_terminal_gate_allows(handler):
+            return bad(handler, _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE, 403)
         require(body, "session_id")
         data = str(body.get("data", ""))
         if len(data) > 8192:
@@ -15007,6 +15036,8 @@ def _handle_terminal_input(handler, body):
 
 def _handle_terminal_resize(handler, body):
     try:
+        if not _embedded_terminal_gate_allows(handler):
+            return bad(handler, _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE, 403)
         require(body, "session_id")
         from api.terminal import resize_terminal
         resize_terminal(
@@ -15025,6 +15056,8 @@ def _handle_terminal_resize(handler, body):
 
 def _handle_terminal_close(handler, body):
     try:
+        if not _embedded_terminal_gate_allows(handler):
+            return bad(handler, _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE, 403)
         require(body, "session_id")
         from api.terminal import close_terminal
         closed = close_terminal(body["session_id"])
@@ -15034,6 +15067,8 @@ def _handle_terminal_close(handler, body):
 
 
 def _handle_terminal_output(handler, parsed):
+    if not _embedded_terminal_gate_allows(handler):
+        return bad(handler, _EMBEDDED_TERMINAL_GATE_DENIED_MESSAGE, 403)
     qs = parse_qs(parsed.query)
     sid = qs.get("session_id", [""])[0]
     if not sid:
