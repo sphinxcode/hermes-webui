@@ -26,8 +26,10 @@ def test_moa_presets_render_as_virtual_provider_models(monkeypatch, tmp_path):
     def fake_live_models(provider_id):
         if provider_id == "copilot":
             return ["gpt-5.5"]
+        # MoA presets are local config, so the picker must still render them
+        # when older Hermes Agent installs cannot provide provider_model_ids("moa").
         if provider_id == "moa":
-            return ["default", "Frontier Tuned"]
+            return []
         return []
 
     monkeypatch.setattr(config, "_read_live_provider_model_ids", fake_live_models)
@@ -108,3 +110,44 @@ def test_resolve_moa_config_uses_selected_preset(monkeypatch):
     assert resolved["preset"] == "Frontier Tuned"
     assert resolved["reference_models"] == [{"provider": "copilot", "model": "claude-opus-4.8"}]
     assert resolved["aggregator"] == {"provider": "copilot", "model": "gpt-5.4"}
+
+
+def test_resolve_moa_config_falls_back_when_preset_resolution_raises(monkeypatch):
+    import sys
+    from types import ModuleType
+    from typing import Any, cast
+
+    import api.commands as commands
+
+    cfg = {
+        "moa": {
+            "default_preset": "default",
+            "presets": {"default": {"enabled": True}},
+        }
+    }
+    hermes_cli_pkg = sys.modules.get("hermes_cli") or ModuleType("hermes_cli")
+    hermes_cli_pkg.__path__ = []
+    moa_config = ModuleType("hermes_cli.moa_config")
+
+    def normalize_moa_config(raw):
+        return {
+            "default_preset": raw.get("default_preset", "default"),
+            "presets": raw.get("presets", {}),
+        }
+
+    def resolve_moa_preset(_raw, _preset_name):
+        raise ValueError("boom")
+
+    moa_config_any = cast(Any, moa_config)
+    moa_config_any.normalize_moa_config = normalize_moa_config
+    moa_config_any.resolve_moa_preset = resolve_moa_preset
+    moa_config_any.moa_usage = lambda: "Usage: /moa <prompt>"
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli_pkg)
+    monkeypatch.setitem(sys.modules, "hermes_cli.moa_config", moa_config)
+    monkeypatch.setattr(commands, "_load_config_for_moa_resolution", lambda: cfg, raising=False)
+
+    resolved = commands.resolve_moa_config("broken")
+
+    assert resolved["preset"] == "default"
+    assert resolved["default_preset"] == "default"
+    assert resolved["usage"] == "Usage: /moa <prompt>"

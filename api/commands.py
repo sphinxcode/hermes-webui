@@ -419,8 +419,8 @@ def resolve_moa_config(preset: str | None = None) -> dict:
         try:
             selected = resolve_moa_preset(moa_raw, preset_name)
         except Exception:
-            selected = resolve_moa_preset({}, None)
-            preset_name = "default"
+            selected = {}
+            preset_name = str(moa_cfg.get("default_preset") or "default")
 
     resolved = dict(moa_cfg)
     resolved.update(selected)

@@ -5499,6 +5499,28 @@ def _models_from_live_provider_ids(provider_id: str, live_ids: list[str]) -> lis
     return models
 
 
+def _moa_preset_models_from_config(config_obj: dict | None = None) -> list[dict]:
+    """Return enabled MoA presets from local config as picker model entries."""
+    source = config_obj if isinstance(config_obj, dict) else cfg
+    moa_cfg = source.get("moa") if isinstance(source, dict) else None
+    if not isinstance(moa_cfg, dict) or not bool(moa_cfg.get("enabled", True)):
+        return []
+    presets = moa_cfg.get("presets")
+    if not isinstance(presets, dict):
+        return []
+    models: list[dict] = []
+    seen: set[str] = set()
+    for name, preset_cfg in presets.items():
+        preset_name = str(name or "").strip()
+        if not preset_name or preset_name in seen:
+            continue
+        if isinstance(preset_cfg, dict) and preset_cfg.get("enabled") is False:
+            continue
+        seen.add(preset_name)
+        models.append({"id": preset_name, "label": preset_name})
+    return models
+
+
 def _read_visible_codex_cache_model_ids() -> list[str]:
     """Return visible model slugs from Codex's local models_cache.json.
 
@@ -6808,10 +6830,13 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                                            for k in cfg_models]
 
                     if not raw_models:
-                        raw_models = _models_from_live_provider_ids(
-                            pid,
-                            _read_live_provider_model_ids(pid),
-                        )
+                        if pid == "moa":
+                            raw_models = _moa_preset_models_from_config(cfg)
+                        else:
+                            raw_models = _models_from_live_provider_ids(
+                                pid,
+                                _read_live_provider_model_ids(pid),
+                            )
 
                     if not raw_models:
                         raw_models = copy.deepcopy(_PROVIDER_MODELS.get(pid, []))
