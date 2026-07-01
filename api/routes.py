@@ -6005,6 +6005,23 @@ def _repair_bare_custom_provider_model(
         return None
 
 
+def _moa_fast_path_model_state(model: str) -> tuple[str, str, bool]:
+    """Strip an optional ``@moa:``/``moa/`` prefix from an MoA-routed model.
+
+    Split out of ``_resolve_compatible_session_model_state`` so the MoA
+    fast-path stays a single-line call in that function body (see
+    ``test_issue1855_resolve_model_provider_fast_path.py``, the fast-path/
+    catalog-call ordering check scans a bounded window of that function's
+    source, and inlining this here previously pushed the catalog call just
+    past that window).
+    """
+    if model.startswith("@moa:"):
+        return model.split(":", 1)[1].strip(), "moa", True
+    if model.lower().startswith("moa/"):
+        return model.split("/", 1)[1].strip(), "moa", True
+    return model, "moa", False
+
+
 def _resolve_compatible_session_model_state(
     model_id: str | None,
     model_provider: str | None = None,
@@ -6032,7 +6049,7 @@ def _resolve_compatible_session_model_state(
     after paying the full catalog-build cost. Avoiding the catalog here keeps
     ``POST /api/chat/start`` snappy even when the model catalog is cold and the
     rebuild has to make network calls (custom OpenAI-compat endpoints,
-    OpenRouter ``/models``, LM Studio ``/models``, credential pool refresh) —
+    OpenRouter ``/models``, LM Studio ``/models``, credential pool refresh),
     those used to wedge the handler for >100s and trigger 502s on default-60s
     reverse proxies, even though the WebUI itself eventually responded.
 
@@ -6040,7 +6057,7 @@ def _resolve_compatible_session_model_state(
     non-blocking: it resolves from the warm/disk cache or a network-free
     minimal catalog and NEVER triggers a live per-provider rebuild (the
     Copilot token-exchange HTTPS call that hangs a server-initiated wakeup
-    turn — see rebase report §1/§3/model-resolve-hang). Human-initiated
+    turn, see rebase report §1/§3/model-resolve-hang). Human-initiated
     chat/start leaves this False to keep full live discovery; a session that
     already has a persisted model still resolves correctly because the
     persisted model wins over the catalog and the catalog is only consulted
@@ -6048,6 +6065,8 @@ def _resolve_compatible_session_model_state(
     """
     model = str(model_id or "").strip()
     requested_provider = _clean_session_model_provider(model_provider)
+    if model and requested_provider == "moa":
+        return _moa_fast_path_model_state(model)
     if model and requested_provider and model.startswith(f"@{requested_provider}:"):
         try:
             from api.config import cfg as _active_cfg
@@ -19369,6 +19388,15 @@ def _handle_chat_start(handler, body, diag=None):
             profile_config=_pp_cfg,
             explicit_model_pick=explicit_model_pick,
         )
+        if model_provider == "moa" and moa_config is None:
+            if webui_gateway_chat_enabled(get_config()):
+                return bad(handler, "MoA override is unavailable on gateway-backed sessions", 409)
+            from api.commands import resolve_moa_config
+
+            try:
+                moa_config = resolve_moa_config(model)
+            except RuntimeError as e:
+                return bad(handler, str(e), 503)
         # NOTE: runtime-adapter selection is delegated to _start_run (shared
         # with start_session_turn so both entry points behave identically
         # under runtime_adapter_enabled() / runtime_adapter_runner_enabled()

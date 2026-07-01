@@ -1139,6 +1139,7 @@ _PROVIDER_DISPLAY = {
     "openai-codex": "OpenAI Codex",
     "xai-oauth": "xAI Grok OAuth",
     "copilot": "GitHub Copilot",
+    "moa": "Mixture of Agents",
     "cursor-acp": "Cursor ACP",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
@@ -1678,15 +1679,31 @@ _PROVIDER_MODELS = {
         {"id": "MiniMax-M2.7", "label": "MiniMax M2.7"},
     ],
     # GitHub Copilot — model IDs served via the Copilot API
+    # Fallback ONLY — the live GitHub Copilot catalog
+    # (hermes_cli.models.provider_model_ids("copilot")) is authoritative and is
+    # tried first by _read_live_provider_model_ids(). This static list is the
+    # safety net shown when the live probe fails (cold start / token blip). Keep
+    # it in sync with the real integrator allowlist so a probe miss never renders
+    # legacy junk (GPT-4o / gpt-3.5-turbo). Last synced 2026-06-30 from the live
+    # copilot-4-cli catalog (16 models).
     "copilot": [
+        {"id": "claude-opus-4.8", "label": "Claude Opus 4.8"},
+        {"id": "claude-opus-4.7", "label": "Claude Opus 4.7"},
+        {"id": "claude-opus-4.6", "label": "Claude Opus 4.6"},
+        {"id": "claude-sonnet-5", "label": "Claude Sonnet 5"},
+        {"id": "claude-sonnet-4.6", "label": "Claude Sonnet 4.6"},
+        {"id": "claude-sonnet-4.5", "label": "Claude Sonnet 4.5"},
+        {"id": "claude-haiku-4.5", "label": "Claude Haiku 4.5"},
         {"id": "gpt-5.5", "label": "GPT-5.5"},
-        {"id": "gpt-5.5-mini", "label": "GPT-5.5 Mini"},
         {"id": "gpt-5.4", "label": "GPT-5.4"},
         {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini"},
+        {"id": "gpt-5.3-codex", "label": "GPT-5.3 Codex"},
+        {"id": "gpt-5-mini", "label": "GPT-5 Mini"},
+        {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro Preview"},
+        {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
+        {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
+        {"id": "mai-code-1-flash-picker", "label": "MAI Code 1 Flash"},
         {"id": "gpt-4o", "label": "GPT-4o"},
-        {"id": "claude-opus-4.6", "label": "Claude Opus 4.6"},
-        {"id": "claude-sonnet-4.6", "label": "Claude Sonnet 4.6"},
-        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview"},
     ],
     # Cursor ACP — models served via Cursor CLI agent acp
     "cursor-acp": [
@@ -5558,6 +5575,28 @@ def _models_from_live_provider_ids(provider_id: str, live_ids: list[str]) -> lis
     return models
 
 
+def _moa_preset_models_from_config(config_obj: dict | None = None) -> list[dict]:
+    """Return enabled MoA presets from local config as picker model entries."""
+    source = config_obj if isinstance(config_obj, dict) else cfg
+    moa_cfg = source.get("moa") if isinstance(source, dict) else None
+    if not isinstance(moa_cfg, dict) or not bool(moa_cfg.get("enabled", True)):
+        return []
+    presets = moa_cfg.get("presets")
+    if not isinstance(presets, dict):
+        return []
+    models: list[dict] = []
+    seen: set[str] = set()
+    for name, preset_cfg in presets.items():
+        preset_name = str(name or "").strip()
+        if not preset_name or preset_name in seen:
+            continue
+        if isinstance(preset_cfg, dict) and preset_cfg.get("enabled") is False:
+            continue
+        seen.add(preset_name)
+        models.append({"id": preset_name, "label": preset_name})
+    return models
+
+
 def _read_visible_codex_cache_model_ids() -> list[str]:
     """Return visible model slugs from Codex's local models_cache.json.
 
@@ -6039,7 +6078,28 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                     or _is_plugin_model_provider(_canonical)
                 )
                 _is_provider_config = isinstance(_provider_cfg, dict)
-                if not (_is_known_provider or _is_provider_config):
+                _has_provider_route = False
+                if _is_provider_config:
+                    _has_provider_route = any(
+                        str(_provider_cfg.get(_route_key) or "").strip()
+                        for _route_key in ("api", "base_url", "api_key", "key_env")
+                    )
+                # A models-only provider config (no api/base_url/api_key/key_env)
+                # is only admitted as evidence when it's the active/configured
+                # provider (e.g. the lmstudio-style custom shape from #1970).
+                # This must NOT re-open the door for a spurious duplicate alias
+                # of a known provider (e.g. ``copilot-2: {name: "copilot",
+                # models: {...}}`` from #644/dedup regression) — that case is
+                # still rejected because it isn't the active provider and it
+                # isn't a route-bearing config in its own right.
+                _has_models_only_active_route = (
+                    not _has_provider_route
+                    and _is_provider_config
+                    and isinstance(_provider_cfg.get("models"), (dict, list))
+                    and _provider_cfg["models"]
+                    and _canonical == _canonicalise_provider_id(active_provider)
+                )
+                if not (_is_known_provider or _has_provider_route or _has_models_only_active_route):
                     continue
 
                 _canonical_to_raw_provider_key.setdefault(_canonical, _pid_key)
@@ -6476,6 +6536,16 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 _canonicalised_detected.add(_c)
             detected_providers = _canonicalised_detected
 
+        try:
+            _moa_cfg = cfg.get("moa") if isinstance(cfg, dict) else None
+            if isinstance(_moa_cfg, dict):
+                _moa_enabled = bool(_moa_cfg.get("enabled", True))
+                _moa_presets = _moa_cfg.get("presets")
+                if _moa_enabled and isinstance(_moa_presets, dict) and _moa_presets:
+                    detected_providers.add("moa")
+        except Exception:
+            logger.debug("Failed to inspect MoA presets for model picker", exc_info=True)
+
         # 5. Build model groups
         if detected_providers:
             _picker_selected_model_id = (
@@ -6815,6 +6885,7 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                         _append_picker_group(provider_name, pid, raw_models)
                 elif (
                     pid in _PROVIDER_MODELS
+                    or pid in _PROVIDER_DISPLAY
                     or pid in _canonical_to_raw_provider_key
                     or _is_plugin_model_provider(pid)
                 ):
@@ -6828,11 +6899,21 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                     raw_models = []
 
                     # User-configured model allowlists are explicit local
-                    # source-of-truth and should still beat auto-discovery.
-                    # Otherwise, ask Hermes CLI first so WebUI tracks the same
-                    # live catalog as the agent/CLI picker; WebUI's static
-                    # _PROVIDER_MODELS table is now a fallback only (#1240).
-                    if isinstance(provider_cfg, dict) and "models" in provider_cfg:
+                    # source-of-truth for custom/plugin providers, AND for most
+                    # built-in Hermes providers (e.g. providers.anthropic.models
+                    # is a real picker allowlist — see #644). Copilot is the
+                    # exception: it uses providers.copilot.models as a per-model
+                    # settings map (reasoning_effort, limits, etc.), so treating
+                    # that as an allowlist collapsed the Copilot picker to
+                    # whichever model had local settings. Only Copilot skips the
+                    # config-models allowlist branch and asks Hermes CLI for the
+                    # live catalog first (static _PROVIDER_MODELS is fallback only).
+                    _uses_models_as_settings_map = pid == "copilot"
+                    if (
+                        not _uses_models_as_settings_map
+                        and isinstance(provider_cfg, dict)
+                        and "models" in provider_cfg
+                    ):
                         cfg_models = provider_cfg["models"]
                         if isinstance(cfg_models, dict):
                             raw_models = [{"id": k, "label": k} for k in cfg_models.keys()]
@@ -6842,10 +6923,13 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                                            for k in cfg_models]
 
                     if not raw_models:
-                        raw_models = _models_from_live_provider_ids(
-                            pid,
-                            _read_live_provider_model_ids(pid),
-                        )
+                        if pid == "moa":
+                            raw_models = _moa_preset_models_from_config(cfg)
+                        else:
+                            raw_models = _models_from_live_provider_ids(
+                                pid,
+                                _read_live_provider_model_ids(pid),
+                            )
 
                     if not raw_models:
                         raw_models = copy.deepcopy(_PROVIDER_MODELS.get(pid, []))
