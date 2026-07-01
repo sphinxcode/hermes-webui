@@ -22274,8 +22274,15 @@ def _handle_session_import_cli(handler, body):
             existing.messages = fresh_msgs
             changed = True
         if cli_meta:
+            # A subagent child must never be flipped to CLI-classified /
+            # writable on an existing-session refresh either (#5307).
+            _existing_is_sa = (
+                (existing.source_tag or existing.raw_source or "").strip().lower() == "subagent"
+                or (cli_meta.get("source_tag") or cli_meta.get("raw_source") or "").strip().lower() == "subagent"
+                or _is_subagent_child_session_id(sid)
+            )
             updates = {
-                "is_cli_session": True,
+                "is_cli_session": (False if _existing_is_sa else True),
                 "source_tag": existing.source_tag or cli_meta.get("source_tag"),
                 "raw_source": existing.raw_source or cli_meta.get("raw_source") or cli_meta.get("source_tag"),
                 "session_source": existing.session_source or cli_meta.get("session_source"),
@@ -22286,6 +22293,11 @@ def _handle_session_import_cli(handler, body):
                 if getattr(existing, attr, None) != value:
                     setattr(existing, attr, value)
                     changed = True
+        else:
+            _existing_is_sa = (
+                (existing.source_tag or existing.raw_source or "").strip().lower() == "subagent"
+                or _is_subagent_child_session_id(sid)
+            )
         if changed:
             existing.save(touch_updated_at=False)
             publish_session_list_changed(
@@ -22298,7 +22310,7 @@ def _handle_session_import_cli(handler, body):
                 "session": existing.compact()
                 | {
                     "messages": existing.messages,
-                    "is_cli_session": True,
+                    "is_cli_session": (False if _existing_is_sa else True),
                     # Greptile #4911 follow-up: read read_only from
                     # the persisted Session, NOT from cli_meta.  This
                     # refresh path is for an already-WebUI-owned
@@ -22347,6 +22359,12 @@ def _handle_session_import_cli(handler, body):
     # read-only source (return the read-only stub payload, do not import), and
     # keep them out of the _isExternalSession frontend gates (is_cli_session=False).
     _sa_child = _is_subagent_child_session_id(sid)
+    # Also treat a resolved-metadata subagent source as view-only: with
+    # all_profiles=true, cli_meta is resolved from the requested (possibly
+    # non-active) profile, so the active-profile state.db check (_sa_child)
+    # can miss it (#5307 cross-profile edge).
+    _cli_sa = (cli_source_tag or cli_raw_source or "").strip().lower() == "subagent"
+    _sa_child = _sa_child or _cli_sa
     _read_only_view = cli_read_only or _sa_child
 
     # Use the CLI session title if available (e.g., cron job name), otherwise derive from messages
