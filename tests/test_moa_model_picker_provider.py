@@ -151,3 +151,49 @@ def test_resolve_moa_config_falls_back_when_preset_resolution_raises(monkeypatch
     assert resolved["preset"] == "default"
     assert resolved["default_preset"] == "default"
     assert resolved["usage"] == "Usage: /moa <prompt>"
+
+
+def test_resolve_moa_config_ignores_non_dict_preset_result(monkeypatch):
+    import sys
+    from types import ModuleType
+    from typing import Any, cast
+
+    import api.commands as commands
+
+    cfg = {
+        "moa": {
+            "default_preset": "default",
+            "presets": {"default": {"enabled": True}},
+        }
+    }
+    hermes_cli_pkg = sys.modules.get("hermes_cli") or ModuleType("hermes_cli")
+    hermes_cli_pkg.__path__ = []
+    moa_config = ModuleType("hermes_cli.moa_config")
+
+    def normalize_moa_config(raw):
+        return {
+            "default_preset": raw.get("default_preset", "default"),
+            "presets": raw.get("presets", {}),
+        }
+
+    # A hermes-agent build that returns ``None`` for a missing/unknown preset
+    # instead of raising. Without a dict guard, ``resolved.update(None)`` would
+    # raise ``TypeError`` and bypass the routes.py ``except RuntimeError`` guard,
+    # surfacing as an unhandled 500 on chat start.
+    def resolve_moa_preset(_raw, _preset_name):
+        return None
+
+    moa_config_any = cast(Any, moa_config)
+    moa_config_any.normalize_moa_config = normalize_moa_config
+    moa_config_any.resolve_moa_preset = resolve_moa_preset
+    moa_config_any.moa_usage = lambda: "Usage: /moa <prompt>"
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli_pkg)
+    monkeypatch.setitem(sys.modules, "hermes_cli.moa_config", moa_config)
+    monkeypatch.setattr(commands, "_load_config_for_moa_resolution", lambda: cfg, raising=False)
+
+    resolved = commands.resolve_moa_config("default")
+
+    assert isinstance(resolved, dict)
+    assert resolved["preset"] == "default"
+    assert resolved["default_preset"] == "default"
+    assert resolved["usage"] == "Usage: /moa <prompt>"

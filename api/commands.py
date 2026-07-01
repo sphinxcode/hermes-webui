@@ -418,6 +418,8 @@ def resolve_moa_config(preset: str | None = None) -> dict:
     if resolve_moa_preset is not None:
         try:
             selected = resolve_moa_preset(moa_raw, preset_name)
+            if not isinstance(selected, dict):
+                selected = {}
         except Exception:
             selected = {}
             preset_name = str(moa_cfg.get("default_preset") or "default")
