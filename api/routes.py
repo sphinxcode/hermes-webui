@@ -28,7 +28,9 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 from contextlib import closing
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urljoin, urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from api.agent_sessions import (
     MESSAGING_SOURCES,
     _looks_like_default_cli_title,
@@ -261,6 +263,7 @@ _CLIENT_EVENT_RATE_LIMIT_LOCK = threading.Lock()
 _CLIENT_EVENT_RATE_LIMIT_WINDOW_SECONDS = 60
 _CLIENT_EVENT_RATE_LIMIT_MAX = 30
 _CLIENT_EVENT_MAX_BODY_BYTES = 4 * 1024
+_EXTENSION_SIDECAR_PROXY_MAX_RESPONSE_BYTES = 512 * 1024
 _CLIENT_EVENT_ALLOWED_FIELDS = {
     "event": 64,
     "source": 80,
@@ -2683,6 +2686,7 @@ from api.helpers import (
     j,
     t,
     read_body,
+    MAX_BODY_BYTES,
     _security_headers,
     _sanitize_error,
     redact_session_data,
@@ -4939,6 +4943,57 @@ def _is_browser_unsafe_request(handler) -> bool:
     return bool(handler.headers.get("Origin") or handler.headers.get("Referer"))
 
 
+def _check_same_origin_browser_request(handler, *, require_provenance: bool = False) -> bool:
+    _clear_csrf_failure_reason(handler)
+    origin = handler.headers.get("Origin", "")
+    referer = handler.headers.get("Referer", "")
+    host = handler.headers.get("Host", "")
+    sec_fetch_site = handler.headers.get("Sec-Fetch-Site", "").strip().lower()
+    if not (origin or referer or sec_fetch_site):
+        return not require_provenance or _set_csrf_failure_reason(handler, "origin_mismatch")
+    if sec_fetch_site == "cross-site":
+        return _set_csrf_failure_reason(handler, "origin_mismatch")
+    target = origin or referer
+    if not target:
+        if sec_fetch_site == "none":
+            return True
+        if sec_fetch_site == "same-origin":
+            return not require_provenance or _set_csrf_failure_reason(
+                handler, "origin_mismatch"
+            )
+        return _set_csrf_failure_reason(handler, "origin_mismatch")
+    m = _re.match(r"^https?://([^/]+)", target)
+    if not m:
+        return _set_csrf_failure_reason(handler, "origin_mismatch")
+    origin_host = m.group(1)
+    origin_scheme = m.group(0).split('://')[0].lower()
+    origin_name, origin_port = _normalize_host_port(origin_host)
+    origin_allowed = False
+    origin_value = m.group(0).rstrip('/').lower()
+    if origin_value in _allowed_public_origins():
+        origin_allowed = True
+    if not origin_allowed:
+        allowed_hosts = [h.strip() for h in [host] if h.strip()]
+        trust_forwarded_host = os.getenv("HERMES_WEBUI_TRUST_FORWARDED_HOST", "").strip().lower()
+        if trust_forwarded_host in ("1", "true", "yes", "on"):
+            allowed_hosts.extend(
+                h.strip()
+                for h in [
+                    handler.headers.get("X-Forwarded-Host", ""),
+                    handler.headers.get("X-Real-Host", ""),
+                ]
+                if h.strip()
+            )
+        for allowed in allowed_hosts:
+            allowed_name, allowed_port = _normalize_host_port(allowed)
+            if origin_name == allowed_name and _ports_match(origin_scheme, origin_port, allowed_port):
+                origin_allowed = True
+                break
+    if not origin_allowed:
+        return _set_csrf_failure_reason(handler, "origin_mismatch")
+    return True
+
+
 def _csrf_exempt_path(path: str) -> bool:
     """Paths that cannot or must not carry a session CSRF token."""
     return path in {
@@ -4979,50 +5034,10 @@ def _csrf_rejection_error(handler) -> str:
 
 def _check_csrf(handler) -> bool:
     """Reject cross-origin or tokenless authenticated browser unsafe requests."""
-    _clear_csrf_failure_reason(handler)
-    origin = handler.headers.get("Origin", "")
-    referer = handler.headers.get("Referer", "")
-    host = handler.headers.get("Host", "")
+    if not _check_same_origin_browser_request(handler):
+        return False
     if not _is_browser_unsafe_request(handler):
-        return True  # non-browser clients (curl, MCP, agent) have no Origin
-    target = origin or referer
-    # Extract host:port from origin/referer
-    m = _re.match(r"^https?://([^/]+)", target)
-    if not m:
-        return _set_csrf_failure_reason(handler, "origin_mismatch")
-    origin_host = m.group(1)
-    origin_scheme = m.group(0).split('://')[0].lower()  # 'http' or 'https'
-    origin_name, origin_port = _normalize_host_port(origin_host)
-    origin_allowed = False
-    # Check against explicitly allowed public origins (env var)
-    origin_value = m.group(0).rstrip('/').lower()
-    if origin_value in _allowed_public_origins():
-        origin_allowed = True
-    if not origin_allowed:
-        # Allow same-origin Host by default. Forwarded host headers are only
-        # trustworthy behind a proxy that strips untrusted inbound copies.
-        allowed_hosts = [
-            h.strip()
-            for h in [host]
-            if h.strip()
-        ]
-        trust_forwarded_host = os.getenv("HERMES_WEBUI_TRUST_FORWARDED_HOST", "").strip().lower()
-        if trust_forwarded_host in ("1", "true", "yes", "on"):
-            allowed_hosts.extend(
-                h.strip()
-                for h in [
-                    handler.headers.get("X-Forwarded-Host", ""),
-                    handler.headers.get("X-Real-Host", ""),
-                ]
-                if h.strip()
-            )
-        for allowed in allowed_hosts:
-            allowed_name, allowed_port = _normalize_host_port(allowed)
-            if origin_name == allowed_name and _ports_match(origin_scheme, origin_port, allowed_port):
-                origin_allowed = True
-                break
-    if not origin_allowed:
-        return _set_csrf_failure_reason(handler, "origin_mismatch")
+        return True  # non-browser clients (curl, MCP, agent) have no Origin/Referer
 
     from api.auth import CSRF_HEADER_NAME, is_auth_enabled, parse_cookie, verify_csrf_token
 
@@ -5033,6 +5048,235 @@ def _check_csrf(handler) -> bool:
     if verify_csrf_token(cookie_val or "", submitted or ""):
         return True
     return _set_csrf_failure_reason(handler, "token_mismatch")
+
+
+_EXTENSION_SIDECAR_PROXY_RE = _re.compile(
+    r"^/api/extensions/(?P<extension_id>[^/]+)/sidecar(?:/(?P<proxy_path>.*))?$"
+)
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _connection_bound_header_names(headers) -> set[str]:
+    names = set(_HOP_BY_HOP_HEADERS)
+    if not headers or not hasattr(headers, "items"):
+        return names
+    connection_values = []
+    if hasattr(headers, "get_all"):
+        connection_values.extend(headers.get_all("Connection", []))
+    else:
+        for name, value in headers.items():
+            if str(name).lower() == "connection":
+                connection_values.append(value)
+    for value in connection_values:
+        for token in str(value).split(","):
+            normalized = token.strip().lower()
+            if normalized:
+                names.add(normalized)
+    return names
+
+
+def _match_extension_sidecar_proxy_path(path: str) -> tuple[str, str] | None:
+    match = _EXTENSION_SIDECAR_PROXY_RE.match(path or "")
+    if not match:
+        return None
+    return match.group("extension_id"), match.group("proxy_path") or ""
+
+
+def _read_body_bytes(handler) -> bytes:
+    raw_length = handler.headers.get("Content-Length", 0)
+    try:
+        length = int(raw_length)
+    except (TypeError, ValueError):
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
+        raise ValueError(f"Invalid Content-Length: {raw_length!r}") from None
+    if length < 0:
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
+        raise ValueError(f"Invalid Content-Length: {length}")
+    if length > MAX_BODY_BYTES:
+        try:
+            handler.close_connection = True
+        except Exception:
+            pass
+        raise ValueError(f"Request body too large ({length} bytes, max {MAX_BODY_BYTES})")
+    return handler.rfile.read(length) if length else b""
+
+
+def _extension_sidecar_proxy_request_headers(handler) -> dict[str, str]:
+    headers = {}
+    raw_headers = getattr(handler, "headers", None)
+    if not raw_headers or not hasattr(raw_headers, "items"):
+        return headers
+    blocked_headers = _connection_bound_header_names(raw_headers)
+    for name, value in raw_headers.items():
+        lower = str(name).lower()
+        if (
+            lower in blocked_headers
+            or lower in {"authorization", "cookie", "content-length", "host", "origin", "referer"}
+            or lower.startswith("x-csrf")
+        ):
+            continue
+        headers[str(name)] = str(value)
+    return headers
+
+
+def _send_extension_sidecar_proxy_response(handler, status: int, body: bytes, headers) -> bool:
+    handler.send_response(status)
+    sent_content_type = False
+    blocked_headers = _connection_bound_header_names(headers)
+    if headers and hasattr(headers, "items"):
+        for name, value in headers.items():
+            lower = str(name).lower()
+            if lower in blocked_headers or lower in {"content-length", "set-cookie"}:
+                continue
+            if lower == "content-type":
+                sent_content_type = True
+            handler.send_header(str(name), str(value))
+    if not sent_content_type:
+        handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    _security_headers(handler)
+    handler.end_headers()
+    handler.wfile.write(body)
+    return True
+
+
+def _read_extension_sidecar_proxy_body(stream) -> bytes:
+    body = stream.read(_EXTENSION_SIDECAR_PROXY_MAX_RESPONSE_BYTES + 1)
+    if len(body) > _EXTENSION_SIDECAR_PROXY_MAX_RESPONSE_BYTES:
+        raise ValueError("Extension sidecar response too large")
+    return body
+
+
+def _extension_sidecar_proxy_redirect_url(
+    allowed_origin: str,
+    request_url: str,
+    redirect_url: str,
+) -> str | None:
+    resolved = urljoin(request_url, redirect_url or "")
+    allowed = urlsplit(allowed_origin or "")
+    parts = urlsplit(resolved)
+    if not allowed.scheme or not allowed.netloc or not parts.scheme or not parts.netloc:
+        return None
+    allowed_scheme = allowed.scheme.lower()
+    redirect_scheme = parts.scheme.lower()
+    if redirect_scheme != allowed_scheme:
+        return None
+    allowed_name, allowed_port = _normalize_host_port(allowed.netloc)
+    redirect_name, redirect_port = _normalize_host_port(parts.netloc)
+    if redirect_name != allowed_name or not _ports_match(
+        allowed_scheme,
+        redirect_port,
+        allowed_port,
+    ):
+        return None
+    return resolved
+
+
+def _extension_sidecar_proxy_same_origin_opener(allowed_origin: str):
+    class _SameOriginRedirectHandler(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            resolved = _extension_sidecar_proxy_redirect_url(
+                allowed_origin,
+                req.full_url,
+                newurl,
+            )
+            if not resolved:
+                raise URLError("Extension sidecar redirect crossed declared origin")
+            return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+    return build_opener(ProxyHandler({}), _SameOriginRedirectHandler)
+
+
+def _handle_extension_sidecar_proxy(
+    handler,
+    parsed,
+    method: str,
+    *,
+    read_request_body: bool = False,
+):
+    matched = _match_extension_sidecar_proxy_path(parsed.path)
+    if matched is None:
+        return False
+    # Require same-origin browser provenance on EVERY proxied method, not just
+    # GET. Browser extensions (the only legitimate caller) always send Origin/
+    # Referer/Sec-Fetch-Site, so this costs nothing on the real path while
+    # closing the GET-vs-unsafe-method asymmetry: without it, POST/PATCH/PUT/
+    # DELETE fell through the CSRF compatibility path that intentionally admits
+    # non-browser clients, giving unsafe methods weaker provenance than GET.
+    if not _check_same_origin_browser_request(handler, require_provenance=True):
+        return j(handler, {"error": _csrf_rejection_error(handler)}, status=403)
+    try:
+        request_body = _read_body_bytes(handler) if read_request_body else None
+    except ValueError as exc:
+        status = 413 if "too large" in str(exc).lower() else 400
+        return bad(handler, str(exc), status=status)
+    from api.extensions import (
+        ExtensionSidecarProxyError,
+        resolve_extension_sidecar_proxy_target,
+    )
+
+    extension_id, proxy_path = matched
+    try:
+        target = resolve_extension_sidecar_proxy_target(
+            extension_id,
+            proxy_path,
+            query=parsed.query,
+        )
+        request = Request(
+            target["upstream_url"],
+            data=request_body,
+            headers=_extension_sidecar_proxy_request_headers(handler),
+            method=method,
+        )
+        opener = _extension_sidecar_proxy_same_origin_opener(target["origin"])
+        with opener.open(request, timeout=10) as response:
+            body = _read_extension_sidecar_proxy_body(response)
+            return _send_extension_sidecar_proxy_response(
+                handler,
+                getattr(response, "status", 200),
+                body,
+                response.headers,
+            )
+    except ExtensionSidecarProxyError as exc:
+        return bad(handler, str(exc), status=exc.status)
+    except ValueError as exc:
+        return bad(handler, str(exc), status=502)
+    except HTTPError as exc:
+        try:
+            body = _read_extension_sidecar_proxy_body(exc)
+        except ValueError as read_exc:
+            return bad(handler, str(read_exc), status=502)
+        return _send_extension_sidecar_proxy_response(
+            handler,
+            exc.code,
+            body,
+            exc.headers,
+        )
+    except (TimeoutError, URLError, OSError):
+        logger.warning(
+            "extension sidecar proxy failed for %s %s",
+            method,
+            parsed.path,
+            exc_info=True,
+        )
+        return bad(handler, "Failed to reach extension sidecar", status=502)
 
 
 def _client_ip_for_rate_limit(handler) -> str:
@@ -5196,7 +5440,7 @@ def _safe_content_length(handler, max_bytes: int) -> int:
             handler.close_connection = True
         except Exception:
             pass
-        raise ValueError(f"Invalid Content-Length: {raw_length!r}")
+        raise ValueError(f"Invalid Content-Length: {raw_length!r}") from None
     if length < 0:
         try:
             handler.close_connection = True
@@ -10652,6 +10896,9 @@ def _render_index_shell_base() -> str:
 
 def handle_get(handler, parsed) -> bool:
     """Handle all GET routes. Returns True if handled, False for 404."""
+    proxy_result = _handle_extension_sidecar_proxy(handler, parsed, "GET")
+    if proxy_result is not False:
+        return proxy_result
 
     if parsed.path.startswith("/session/static/"):
         # Strip the leading "/session" so _serve_static() sees a path that
@@ -12430,6 +12677,16 @@ def handle_post(handler, parsed) -> bool:
         finally:
             if diag:
                 diag.finish()
+    proxy_result = _handle_extension_sidecar_proxy(
+        handler,
+        parsed,
+        "POST",
+        read_request_body=True,
+    )
+    if proxy_result is not False:
+        if diag:
+            diag.finish()
+        return proxy_result
 
     if parsed.path == "/api/shutdown":
         return _handle_shutdown(handler)
@@ -12498,6 +12755,26 @@ def handle_post(handler, parsed) -> bool:
             return bad(handler, str(exc), status=exc.status)
         except Exception:
             logger.exception("extension toggle failed")
+            return bad(handler, "Failed to update extension state", status=500)
+
+    if parsed.path == "/api/extensions/sidecar-proxy-consent":
+        from api.extensions import (
+            ExtensionSidecarProxyError,
+            set_extension_sidecar_proxy_consent,
+        )
+
+        try:
+            return j(
+                handler,
+                set_extension_sidecar_proxy_consent(
+                    body.get("id"),
+                    body.get("approved"),
+                ),
+            )
+        except ExtensionSidecarProxyError as exc:
+            return bad(handler, str(exc), status=exc.status)
+        except Exception:
+            logger.exception("extension sidecar proxy consent update failed")
             return bad(handler, "Failed to update extension state", status=500)
 
     if parsed.path == "/api/extensions/install":
@@ -14659,6 +14936,14 @@ def handle_patch(handler, parsed) -> bool:
     """Handle all PATCH routes. Returns True if handled, False for 404."""
     if not _check_csrf(handler):
         return j(handler, {"error": _csrf_rejection_error(handler)}, status=403)
+    proxy_result = _handle_extension_sidecar_proxy(
+        handler,
+        parsed,
+        "PATCH",
+        read_request_body=True,
+    )
+    if proxy_result is not False:
+        return proxy_result
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="PATCH"):
         return True
@@ -14679,6 +14964,14 @@ def handle_delete(handler, parsed) -> bool:
     """Handle all DELETE routes. Returns True if handled, False for 404."""
     if not _check_csrf(handler):
         return j(handler, {"error": _csrf_rejection_error(handler)}, status=403)
+    proxy_result = _handle_extension_sidecar_proxy(
+        handler,
+        parsed,
+        "DELETE",
+        read_request_body=True,
+    )
+    if proxy_result is not False:
+        return proxy_result
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="DELETE"):
         return True
@@ -14707,6 +15000,14 @@ def handle_put(handler, parsed) -> bool:
     """Handle all PUT routes. Returns True if handled, False for 404."""
     if not _check_csrf(handler):
         return j(handler, {"error": "Cross-origin request rejected"}, status=403)
+    proxy_result = _handle_extension_sidecar_proxy(
+        handler,
+        parsed,
+        "PUT",
+        read_request_body=True,
+    )
+    if proxy_result is not False:
+        return proxy_result
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="PUT"):
         return True
